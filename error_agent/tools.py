@@ -92,14 +92,19 @@ class ProjectAnalyzer:
                 
                 # Find the function in the module
                 for name, obj in inspect.getmembers(module):
-                    if (inspect.isfunction(obj) and 
-                        obj.__code__.co_filename == frame.filename and
-                        obj.__code__.co_firstlineno <= frame.lineno <= 
-                        obj.__code__.co_firstlineno + obj.__code__.co_code.co_size):
-                        return {
-                            "name": name,
-                            "context": inspect.getsource(obj)
-                        }
+                    if inspect.isfunction(obj) and obj.__code__.co_filename == frame.filename:
+                        try:
+                            source_lines, start_line = inspect.getsourcelines(obj)
+                            end_line = start_line + len(source_lines) - 1
+                        except (OSError, TypeError):
+                            source_lines, start_line = [], obj.__code__.co_firstlineno
+                            end_line = obj.__code__.co_firstlineno
+
+                        if start_line <= frame.lineno <= end_line:
+                            return {
+                                "name": name,
+                                "context": "".join(source_lines) if source_lines else inspect.getsource(obj)
+                            }
         except Exception:
             pass
             

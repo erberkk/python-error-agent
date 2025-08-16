@@ -127,13 +127,13 @@ When an error occurs, Error Agent sends you:
 - **Code Quality**: Preserves your exact function signatures
 - **Multiple Frameworks**: Flask, FastAPI, and more
 
-## 📁 Project Structure
+```bash
 flask-ai-error-agent/
-├── error_agent/ # Core package
-│ ├── agent.py # Main ErrorAgent class
-│ ├── llm.py # LLM integration
-│ ├── slack.py # Slack notifications
-│ ├── google_chat.py # Google Chat notifications
-│ └── tools.py # Project analysis utilities
-├── examples/ # Usage examples
-└── requirements.txt # Dependencies
+├── error_agent/              # Core package
+│   ├── agent.py              # Main ErrorAgent class
+│   ├── llm.py                # LLM integration
+│   ├── slack.py              # Slack notifications
+│   ├── google_chat.py        # Google Chat notifications
+│   └── tools.py              # Project analysis utilities
+├── examples/                 # Usage examples
+└── requirements.txt          # Dependencies

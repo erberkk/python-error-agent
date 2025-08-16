@@ -36,14 +36,16 @@ class LLMHandler:
                 json={
                     "model": self.model,
                     "prompt": prompt,
-                    "stream": False
+                    "stream": False,
+                    # If the provider supports it, this flag often enforces JSON-only
+                    "format": "json"
                 },
                 headers={"Content-Type": "application/json"}
             )
             response.raise_for_status()
             
             logger.info("Received response from LLM")
-            insights = self._parse_response(response.json())
+            insights = self._parse_response(response.json(), error_context)
             logger.info("Successfully parsed LLM response")
             return insights
             
@@ -58,8 +60,12 @@ class LLMHandler:
             
     def _construct_prompt(self, error_context: Dict[str, Any], source_code: str) -> str:
         """Construct the prompt for the LLM."""
+        related = error_context.get("related_context", "")
+        signature = error_context.get("function_signature", "")
+        fn_doc = error_context.get("function_docstring", "")
+        stack = error_context.get("stack_trace", "")
         return f"""
-You are an expert Python developer. Analyze the following error and provide detailed insights.
+You are an expert Python developer and static analyzer. Analyze the error and return ONLY a valid JSON object matching the schema below. Do not include any extra text before or after the JSON. Do NOT use markdown fences.
 
 ERROR CONTEXT:
 Type: {error_context['error_type']}
@@ -67,264 +73,136 @@ File: {error_context['file']}:{error_context['line']}
 Function: {error_context['function']}
 Message: {error_context['error_message']}
 
-FUNCTION CONTEXT:
+STACK TRACE:
+{stack}
+
+FUNCTION SIGNATURE (do not change):
+{signature}
+
+FUNCTION DOCSTRING:
+{fn_doc}
+
+FUNCTION CONTEXT (full source of the failing function):
 {error_context.get('function_context', 'No function context available')}
 
-SOURCE CODE:
+SOURCE CODE SNIPPET (around error site):
 {source_code}
 
-Please provide a detailed analysis in the following format:
+RELATED CONTEXT (functions called by the failing function found elsewhere in the project):
+{related}
 
-SUMMARY:
-[Provide a brief summary of the error and its impact]
+STRICT REQUIREMENTS FOR THE JSON YOU RETURN:
+- Return ONLY valid JSON (no markdown, no backticks, no prose outside JSON)
+- Keys must exactly be: summary, root_cause, debug_checklist, fix_suggestions, corrected_function
+- debug_checklist: array of 4-7 short actionable strings
+- fix_suggestions: array of 1 object with: description (string) only
+- corrected_function: object with: description (string), code (string)
+- In all code strings: provide fully runnable, correctly indented Python; avoid external/unavailable symbols.
+- CRITICAL CONTRACT ABOUT THE FUNCTION SIGNATURE:
+  * Keep the function signature EXACTLY as provided above, character-for-character, including:
+    - the function name
+    - whether it is async or not (preserve 'async ' if present)
+    - parameters, their order, annotations, and default values
+    - the return annotation (if any)
+  * Do NOT add or remove parameters. Do NOT change names, types, defaults, or async/sync behavior.
+  * The corrected_function.code MUST start with exactly that signature line followed by a colon.
+- Preserve the function's return structure. Do not change the returned schema or keys; only add validation and clear error messages as needed.
 
-ROOT CAUSE:
-[Explain the root cause of the error]
-
-DEBUG CHECKLIST:
-[Provide a list of actionable items to debug and fix the issue]
-
-FIX SUGGESTIONS:
-[Provide specific suggestions to fix the error, including code examples]
-
-CORRECTED FUNCTION:
-[Provide the corrected function code. IMPORTANT: 
-1. Keep the original function signature exactly as is
-2. Preserve all parameters and their types
-3. Maintain the same return type and value structure
-4. Only add or improve validation and error handling
-5. Keep the same docstring format but update it if needed
-6. Ensure the function's core purpose remains unchanged]
-
-The corrected function should:
-- Keep the exact same parameters and return type
-- Maintain the same functionality and purpose
-- Only add or improve input validation and error handling
-- Preserve the original docstring format
-- Not change the function's core behavior
-- Return the same data structure as the original
-
-Please ensure your response is well-structured and includes all sections above.
+Return JSON in this exact shape (fill with your content):
+{{
+  "summary": "...",
+  "root_cause": "...",
+  "debug_checklist": ["...", "..."],
+  "fix_suggestions": [
+    {{"description": "..."}}
+  ],
+  "corrected_function": {{
+    "description": "...",
+    "code": "def FUNCTION_WITH_SAME_SIGNATURE_AS_ABOVE(...):\n    ..."
+  }}
+}}
 """
         
-    def _parse_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
-        """Parse the LLM response into a structured format."""
-        logger.info("Parsing LLM response")
-        
+    def _parse_response(self, response: Dict[str, Any], error_context: Dict[str, Any]) -> Dict[str, Any]:
+        """Parse the LLM response which MUST be a JSON string in response['response']. Enforce signature."""
+        logger.info("Parsing LLM response (JSON mode)")
         try:
-            text = response.get("response", "")
-            sections = self._extract_sections(text)
-            
-            # Parse corrected function section to separate description and code
-            corrected_function = sections.get("CORRECTED FUNCTION", "")
-            corrected_description = ""
-            corrected_code = ""
-            
-            if corrected_function:
-                # Split the section into description and code
-                parts = corrected_function.split("```python")
-                if len(parts) > 1:
-                    # Get description (everything before the code block)
-                    corrected_description = parts[0].strip()
-                    # Get code (everything between ```python and ```)
-                    code_parts = parts[1].split("```")
-                    if code_parts:
-                        corrected_code = code_parts[0].strip()
-                        # Format the code with proper indentation
-                        lines = corrected_code.split("\n")
-                        formatted_lines = []
-                        base_indent = 0
-                        
-                        for line in lines:
-                            # Remove any leading/trailing whitespace
-                            line = line.strip()
-                            if not line:
-                                continue
-                                
-                            # Detect base indentation from the first non-empty line
-                            if not formatted_lines and not line.startswith("def ") and not line.startswith("async def "):
-                                base_indent = len(line) - len(line.lstrip())
-                            
-                            # Add proper indentation
-                            if not line.startswith("def ") and not line.startswith("async def "):
-                                # Preserve relative indentation
-                                current_indent = len(line) - len(line.lstrip())
-                                if current_indent > base_indent:
-                                    line = "    " + line[base_indent:]
-                                else:
-                                    line = "    " + line
-                            formatted_lines.append(line)
-                            
-                        corrected_code = "\n".join(formatted_lines)
-                else:
-                    # If no code block markers found, treat the whole text as code
-                    corrected_code = corrected_function.strip()
-            
-            # Parse debug checklist
-            debug_checklist = self._parse_checklist(sections.get("DEBUG CHECKLIST", ""))
-            if not debug_checklist:
-                # If debug checklist is empty, add default items
-                debug_checklist = [
-                    "Check input validation for all parameters",
-                    "Verify type hints match the expected types",
-                    "Ensure error messages are descriptive and helpful",
-                    "Test the function with various input types",
-                    "Review the function's error handling logic"
-                ]
-            
-            insights = {
-                "summary": sections.get("SUMMARY", "No summary provided"),
-                "root_cause": sections.get("ROOT CAUSE", "No root cause analysis provided"),
-                "debug_checklist": debug_checklist,
-                "fix_suggestions": self._parse_fix_suggestions(sections.get("FIX SUGGESTIONS", "")),
-                "corrected_function": {
-                    "description": corrected_description,
-                    "code": corrected_code
-                }
-            }
-            
-            logger.info("Successfully parsed response sections")
+            raw = response.get("response", "")
+            # Some providers may wrap with whitespace/newlines
+            raw = raw.strip()
+            # Tolerate accidental markdown code fences
+            if raw.startswith("```"):
+                # Remove first line fence, keep inner
+                lines = raw.splitlines()
+                if lines and lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                raw = "\n".join(lines).strip()
+            # The model must return valid JSON; parse it directly
+            import json
+            insights = json.loads(raw)
+
+            # Minimal normalization to keep downstream render robust
+            if not isinstance(insights.get("debug_checklist"), list):
+                dc = insights.get("debug_checklist")
+                insights["debug_checklist"] = [dc] if isinstance(dc, str) else []
+
+            fs = insights.get("fix_suggestions")
+            if fs is None:
+                insights["fix_suggestions"] = []
+            elif isinstance(fs, dict):
+                insights["fix_suggestions"] = [fs]
+            elif isinstance(fs, str):
+                # If it's a string, try to parse it as a single suggestion
+                insights["fix_suggestions"] = [{"description": fs}]
+            elif not isinstance(fs, list):
+                # If it's other type, coerce to a single suggestion
+                insights["fix_suggestions"] = [{"description": str(fs)}]
+
+            cf = insights.get("corrected_function")
+            if isinstance(cf, str):
+                insights["corrected_function"] = {"description": "", "code": cf}
+            elif isinstance(cf, dict):
+                insights.setdefault("corrected_function", {})
+                insights["corrected_function"].setdefault("description", "")
+                insights["corrected_function"].setdefault("code", "")
+            else:
+                insights["corrected_function"] = {"description": "", "code": ""}
+
+            # Enforce exact function signature at the top of corrected_function.code if available
+            target_signature = str(error_context.get("function_signature", "")).strip()
+            if target_signature:
+                cf_obj = insights.get("corrected_function", {}) or {}
+                code_text = cf_obj.get("code", "") or ""
+                if code_text:
+                    code_lines = code_text.splitlines()
+                    fn_idx = None
+                    for i, ln in enumerate(code_lines):
+                        ls = ln.strip()
+                        if ls.startswith("def ") or ls.startswith("async def "):
+                            fn_idx = i
+                            break
+                    desired_first_line = f"{target_signature}:"
+                    if fn_idx is None:
+                        code_lines = [desired_first_line] + [ln for ln in code_lines if ln.strip()]
+                    else:
+                        code_lines[fn_idx] = desired_first_line
+                    cf_obj["code"] = "\n".join(code_lines)
+                    insights["corrected_function"] = cf_obj
+
+            logger.info("Successfully parsed LLM JSON response")
             return insights
-            
         except Exception as e:
-            logger.error(f"Error parsing LLM response: {str(e)}")
+            logger.error(f"Error parsing LLM JSON response: {str(e)}")
             return {
                 "summary": "Failed to parse LLM response",
                 "root_cause": "Response parsing error",
                 "debug_checklist": [
-                    "Check LLM response format",
-                    "Verify response parsing logic",
-                    "Ensure all required sections are present",
-                    "Review error handling in parser"
+                    "Check LLM service output is valid JSON",
+                    "Verify model prompt enforces JSON-only",
+                    "Inspect raw LLM response for syntax issues"
                 ],
-                "fix_suggestions": ["Ensure LLM response follows expected format"],
-                "corrected_function": {
-                    "description": "Unable to parse corrected function description",
-                    "code": "Unable to parse corrected function code"
-                }
+                "fix_suggestions": [],
+                "corrected_function": {"description": "", "code": ""}
             }
-            
-    def _extract_sections(self, text: str) -> Dict[str, str]:
-        """Extract sections from the LLM response."""
-        sections = {}
-        current_section = None
-        current_content = []
-        
-        for line in text.split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-                
-            if line in ["SUMMARY:", "ROOT CAUSE:", "DEBUG CHECKLIST:", "FIX SUGGESTIONS:", "CORRECTED FUNCTION:"]:
-                if current_section:
-                    sections[current_section] = "\n".join(current_content)
-                current_section = line[:-1]  # Remove the colon
-                current_content = []
-            elif current_section:
-                current_content.append(line)
-                
-        if current_section:
-            sections[current_section] = "\n".join(current_content)
-            
-        return sections
-        
-    def _parse_checklist(self, checklist_text: str) -> List[str]:
-        """Parse the debug checklist into a list of items."""
-        items = []
-        for line in checklist_text.split("\n"):
-            line = line.strip()
-            if line.startswith("- "):
-                items.append(line[2:])
-        return items
-        
-    def _parse_fix_suggestions(self, suggestions_text: str) -> List[Dict[str, str]]:
-        """Parse fix suggestions into a structured format."""
-        suggestions = []
-        current_suggestion = None
-        current_code = []
-        in_code_block = False
-        
-        for line in suggestions_text.split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-                
-            if line.startswith("Description:"):
-                if current_suggestion:
-                    # Format the code with proper indentation
-                    code = "\n".join(current_code) if current_code else ""
-                    if code:
-                        lines = code.split("\n")
-                        formatted_lines = []
-                        base_indent = 0
-                        
-                        for code_line in lines:
-                            code_line = code_line.strip()
-                            if not code_line:
-                                continue
-                                
-                            # Detect base indentation from the first non-empty line
-                            if not formatted_lines and not code_line.startswith("def ") and not code_line.startswith("async def "):
-                                base_indent = len(code_line) - len(code_line.lstrip())
-                            
-                            # Add proper indentation
-                            if not code_line.startswith("def ") and not code_line.startswith("async def "):
-                                # Preserve relative indentation
-                                current_indent = len(code_line) - len(code_line.lstrip())
-                                if current_indent > base_indent:
-                                    code_line = "    " + code_line[base_indent:]
-                                else:
-                                    code_line = "    " + code_line
-                            formatted_lines.append(code_line)
-                            
-                        code = "\n".join(formatted_lines)
-                    
-                    suggestions.append({
-                        "description": current_suggestion,
-                        "code": code
-                    })
-                current_suggestion = line[12:].strip()
-                current_code = []
-                in_code_block = False
-            elif line.startswith("```python"):
-                in_code_block = True
-            elif line.startswith("```"):
-                in_code_block = False
-            elif current_suggestion and (in_code_block or line):
-                current_code.append(line)
-                
-        if current_suggestion:
-            # Format the last suggestion's code
-            code = "\n".join(current_code) if current_code else ""
-            if code:
-                lines = code.split("\n")
-                formatted_lines = []
-                base_indent = 0
-                
-                for code_line in lines:
-                    code_line = code_line.strip()
-                    if not code_line:
-                        continue
-                        
-                    # Detect base indentation from the first non-empty line
-                    if not formatted_lines and not code_line.startswith("def ") and not code_line.startswith("async def "):
-                        base_indent = len(code_line) - len(code_line.lstrip())
-                    
-                    # Add proper indentation
-                    if not code_line.startswith("def ") and not code_line.startswith("async def "):
-                        # Preserve relative indentation
-                        current_indent = len(code_line) - len(code_line.lstrip())
-                        if current_indent > base_indent:
-                            code_line = "    " + code_line[base_indent:]
-                        else:
-                            code_line = "    " + code_line
-                    formatted_lines.append(code_line)
-                    
-                code = "\n".join(formatted_lines)
-            
-            suggestions.append({
-                "description": current_suggestion,
-                "code": code
-            })
-            
-        return suggestions 

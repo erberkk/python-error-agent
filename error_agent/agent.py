@@ -4,11 +4,13 @@ import traceback
 import logging
 from typing import Optional, Dict, Any, Type, Any
 from functools import wraps
+from queue import Queue
+from threading import Thread
 
 from .llm import LLMHandler
 from .slack import SlackMessenger
 from .google_chat import GoogleChatMessenger
-from .tools import ProjectAnalyzer, analyze_error_context
+from .tools import ProjectAnalyzer, analyze_error_context, ProjectIndexer, get_function_signature_and_doc
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -57,58 +59,28 @@ class ErrorAgent:
             
         logger.info(f"Error Agent initialized with model: {model}")
         
+        # Build project function index once at startup
+        self.indexer = ProjectIndexer(self.project_root)
+        try:
+            self.indexer.build_index()
+        except Exception as e:
+            logger.warning(f"Project indexing failed: {e}")
+        
+        # Initialize background worker for non-blocking error handling
+        self._queue: Queue = Queue()
+        self._worker: Thread = Thread(target=self._worker_loop, name="ErrorAgentWorker", daemon=True)
+        self._worker.start()
+        
     def handle_exception(self, exc_type: Type[Exception], exc_value: Exception, exc_traceback: Optional[Any]):
         """
-        Handle an exception by analyzing it and sending a report to configured messengers.
-        
-        Args:
-            exc_type: Type of the exception
-            exc_value: The exception instance
-            exc_traceback: The traceback object
+        Backward-compatible API: enqueue the exception for non-blocking processing.
         """
-        logger.info(f"Handling exception: {exc_type.__name__}: {str(exc_value)}")
-        
-        if issubclass(exc_type, KeyboardInterrupt):
-            sys.__excepthook__(exc_type, exc_value, exc_traceback)
-            return
-
-        # Extract traceback
-        if exc_traceback:
-            logger.info("Traceback extracted")
-            tb_list = traceback.extract_tb(exc_traceback)
-        else:
-            tb_list = []
-            
-        # Analyze error context
-        error_context = analyze_error_context(
-            exc_type.__name__,
-            str(exc_value),
-            tb_list,
-            self.project_root
-        )
-        logger.info("Error context analyzed")
-        
-        # Get LLM insights
-        logger.info("Requesting LLM analysis...")
-        insights = self.llm.get_error_insights(error_context, error_context.get('source_context', ''))
-        logger.info("LLM analysis received")
-        
-        # Send to all configured messengers
-        for messenger in self.messengers:
-            try:
-                logger.info(f"Sending report to {messenger.__class__.__name__}...")
-                messenger.send_error_report(error_context, insights)
-                logger.info(f"Report sent to {messenger.__class__.__name__}")
-            except Exception as e:
-                logger.error(f"Failed to send report to {messenger.__class__.__name__}: {str(e)}")
-        
-        # Re-raise the exception
-        raise exc_type(exc_value).with_traceback(exc_traceback)
+        self.submit_exception(exc_type, exc_value, exc_traceback)
 
     def install(self):
         """Install the error handler into the current Python process."""
         logger.info("Installing error handler...")
-        sys.excepthook = self.handle_exception
+        sys.excepthook = self.submit_exception
         logger.info("Error handler installed successfully")
         
     def wrap_function(self, func):
@@ -118,6 +90,84 @@ class ErrorAgent:
             try:
                 return func(*args, **kwargs)
             except Exception as e:
-                self.handle_exception(type(e), e, e.__traceback__)
+                self.submit_exception(type(e), e, e.__traceback__)
                 raise
         return wrapper 
+
+    def submit_exception(self, exc_type: Type[Exception], exc_value: Exception, exc_traceback: Optional[Any]):
+        """
+        Non-blocking submission of an exception to the background worker.
+        Safe to call from request handlers and global hooks.
+        """
+        try:
+            tb_list = traceback.extract_tb(exc_traceback) if exc_traceback else []
+        except Exception:
+            tb_list = []
+        self._queue.put({
+            "exc_type": exc_type.__name__,
+            "exc_message": str(exc_value),
+            "tb_list": tb_list,
+        })
+
+    def _worker_loop(self):
+        while True:
+            job = self._queue.get()
+            try:
+                self._process_exception_job(job)
+            except Exception as e:
+                logger.error(f"ErrorAgent worker failed: {e}")
+            finally:
+                self._queue.task_done()
+
+    def _process_exception_job(self, job: Dict[str, Any]):
+        error_type = job.get("exc_type", "UnknownError")
+        error_message = job.get("exc_message", "")
+        tb_list = job.get("tb_list", [])
+
+        logger.info(f"Handling exception: {error_type}: {error_message}")
+
+        # Analyze error context
+        error_context = analyze_error_context(
+            error_type,
+            error_message,
+            tb_list,
+            self.project_root
+        )
+        logger.info("Error context analyzed")
+
+        # Enrich with related context from project index
+        try:
+            related = self.indexer.get_related_context(
+                error_context.get("file", ""),
+                error_context.get("function", "")
+            )
+        except Exception:
+            related = ""
+        if related:
+            error_context["related_context"] = related
+
+        # Add function signature and docstring to give the model strict contract
+        try:
+            sig = get_function_signature_and_doc(
+                error_context.get("file", ""),
+                error_context.get("function", "")
+            )
+        except Exception:
+            sig = {}
+        if sig:
+            error_context["function_signature"] = sig.get("signature_str", "")
+            error_context["function_docstring"] = sig.get("docstring", "")
+
+        # Get LLM insights
+        logger.info("Requesting LLM analysis...")
+        insights = self.llm.get_error_insights(error_context, error_context.get('source_context', ''))
+        logger.info("LLM analysis received")
+
+        # Send to all configured messengers
+        for messenger in self.messengers:
+            try:
+                logger.info(f"Sending report to {messenger.__class__.__name__}...")
+                messenger.send_error_report(error_context, insights)
+                logger.info(f"Report sent to {messenger.__class__.__name__}")
+            except Exception as e:
+                logger.error(f"Failed to send report to {messenger.__class__.__name__}: {str(e)}")

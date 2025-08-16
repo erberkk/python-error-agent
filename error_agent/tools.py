@@ -1,7 +1,7 @@
 import os
 import inspect
 import traceback
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set
 import importlib.util
 import logging
 import ast
@@ -265,3 +265,214 @@ def analyze_error_context(error_type: str, error_message: str, traceback_list: L
             "source_context": "Error analyzing context",
             "function_context": "Error analyzing function context"
         } 
+
+class ProjectIndexer:
+    """
+    Build a lightweight index of project functions for fast lookup of
+    related function sources during error analysis.
+    """
+    def __init__(self, project_root: str):
+        self.project_root = project_root
+        self.functions_by_file: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        self.functions_by_name: Dict[str, List[Dict[str, Any]]] = {}
+
+    def build_index(self) -> None:
+        logger.info("Building project index (functions and calls)...")
+        for root, dirs, files in os.walk(self.project_root):
+            # Skip common non-source directories
+            dirs[:] = [d for d in dirs if d not in {".git", "__pycache__", "venv", ".venv", "env"}]
+            for fname in files:
+                if not fname.endswith(".py"):
+                    continue
+                path = os.path.join(root, fname)
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    tree = ast.parse(content)
+                    lines = content.splitlines()
+                except Exception:
+                    continue
+
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.FunctionDef):
+                        name = node.name
+                        start = getattr(node, "lineno", None)
+                        end = getattr(node, "end_lineno", None)
+                        if start is None or end is None:
+                            continue
+                        try:
+                            source = "\n".join(lines[start-1:end])
+                        except Exception:
+                            source = ""
+                        doc = ast.get_docstring(node) or ""
+                        calls: Set[str] = set()
+                        for n in ast.walk(node):
+                            if isinstance(n, ast.Call):
+                                # capture simple function names foo(), or attribute calls obj.foo()
+                                func = n.func
+                                if isinstance(func, ast.Name):
+                                    calls.add(func.id)
+                                elif isinstance(func, ast.Attribute):
+                                    calls.add(func.attr)
+
+                        entry = {
+                            "name": name,
+                            "file": path,
+                            "lineno": start,
+                            "end_lineno": end,
+                            "doc": doc,
+                            "source": source,
+                            "calls": sorted(calls)
+                        }
+
+                        self.functions_by_file.setdefault(path, {})[name] = entry
+                        self.functions_by_name.setdefault(name, []).append(entry)
+
+        logger.info("Project index built: %d files, %d unique functions",
+                    len(self.functions_by_file), len(self.functions_by_name))
+
+    def get_related_context(self, file_path: str, function_name: str, max_related: int = 5) -> str:
+        """
+        Return source code for functions related to the target function based on
+        static call names, searching across the project index. Excludes the
+        target function's own file to avoid duplication.
+        """
+        file_funcs = self.functions_by_file.get(file_path, {})
+        target = file_funcs.get(function_name)
+        if not target:
+            return ""
+
+        related_snippets: List[str] = []
+        for called_name in target.get("calls", []):
+            # Find candidates across project
+            for entry in self.functions_by_name.get(called_name, []):
+                if entry["file"] == file_path:
+                    # likely already included by local context extractor
+                    continue
+                snippet = entry.get("source", "")
+                if not snippet:
+                    continue
+                header = f"Related function {called_name} from {os.path.relpath(entry['file'], self.project_root)}:"
+                related_snippets.append("\n".join([
+                    header,
+                    "```python",
+                    snippet,
+                    "```"
+                ]))
+                if len(related_snippets) >= max_related:
+                    break
+            if len(related_snippets) >= max_related:
+                break
+
+        return "\n\n".join(related_snippets)
+
+
+def get_function_signature_and_doc(file_path: str, function_name: str) -> Dict[str, Any]:
+    """
+    Extract function signature (with annotations/defaults) and docstring using AST.
+    Returns a dict containing `signature_str`, `params` (detailed), `returns`, and `docstring`.
+    """
+    result: Dict[str, Any] = {
+        "signature_str": "",
+        "params": [],
+        "returns": "",
+        "docstring": ""
+    }
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        tree = ast.parse(content)
+
+        target_fn: Optional[ast.AST] = None
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and getattr(node, 'name', None) == function_name:
+                target_fn = node
+                break
+        if not target_fn:
+            return result
+
+        def _ann_to_str(ann: Optional[ast.AST]) -> str:
+            if ann is None:
+                return ""
+            try:
+                return ast.unparse(ann)  # type: ignore[attr-defined]
+            except Exception:
+                return ""
+
+        def _default_to_str(default: Optional[ast.AST]) -> str:
+            if default is None:
+                return ""
+            try:
+                return ast.unparse(default)  # type: ignore[attr-defined]
+            except Exception:
+                return ""
+
+        args = target_fn.args  # type: ignore[attr-defined]
+        params: List[Dict[str, Any]] = []
+
+        # Positional and keyword-only args
+        pos_args = args.args or []
+        defaults = args.defaults or []
+        # align defaults to args from the end
+        default_offset = len(pos_args) - len(defaults)
+        for idx, a in enumerate(pos_args):
+            default_val = defaults[idx - default_offset] if idx >= default_offset else None
+            params.append({
+                "name": a.arg,
+                "annotation": _ann_to_str(a.annotation),
+                "default": _default_to_str(default_val)
+            })
+
+        if args.vararg:
+            params.append({
+                "name": f"*{args.vararg.arg}",
+                "annotation": _ann_to_str(args.vararg.annotation),
+                "default": ""
+            })
+
+        # kwonly args
+        kwonly = args.kwonlyargs or []
+        kwdefaults = args.kw_defaults or []
+        for i, a in enumerate(kwonly):
+            default_val = kwdefaults[i] if i < len(kwdefaults) else None
+            params.append({
+                "name": a.arg,
+                "annotation": _ann_to_str(a.annotation),
+                "default": _default_to_str(default_val)
+            })
+
+        if args.kwarg:
+            params.append({
+                "name": f"**{args.kwarg.arg}",
+                "annotation": _ann_to_str(args.kwarg.annotation),
+                "default": ""
+            })
+
+        returns_str = _ann_to_str(getattr(target_fn, "returns", None))
+        docstring = ast.get_docstring(target_fn) or ""
+
+        # Build signature string
+        parts = []
+        for p in params:
+            seg = p["name"]
+            if p["annotation"]:
+                seg += f": {p['annotation']}"
+            if p["default"]:
+                seg += f" = {p['default']}"
+            parts.append(seg)
+        is_async = isinstance(target_fn, ast.AsyncFunctionDef)
+        prefix = "async def" if is_async else "def"
+        signature_str = f"{prefix} {function_name}({', '.join(parts)})"
+        if returns_str:
+            signature_str += f" -> {returns_str}"
+
+        result.update({
+            "signature_str": signature_str,
+            "params": params,
+            "returns": returns_str,
+            "docstring": docstring
+        })
+        return result
+    except Exception as e:
+        logger.error(f"Error extracting function signature for {function_name} in {file_path}: {e}")
+        return result

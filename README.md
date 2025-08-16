@@ -1,37 +1,36 @@
 # Error Agent
 
-An intelligent error handling and debugging agent for Python applications that uses LLM (Mistral-7B) to analyze errors and provide insights via Slack or Google Chat notifications.
+An intelligent error handling and debugging agent for Python applications that uses LLM (Mistral-7B) to automatically analyze errors and provide insights via Slack or Google Chat notifications.
 
-## Features
+## 🎯 What It Does
 
-- Automatic error capture and analysis
-- LLM-powered error insights and debugging suggestions
-- Multiple notification channels:
-  - Slack integration for real-time error notifications
-  - Google Chat integration for team communication
-- Support for both Flask and FastAPI applications
-- Zero-configuration setup
-- Detailed error context including:
-  - Source code with highlighted error lines
-  - Function context and dependencies
-  - Stack traces
-  - LLM-generated insights
-- Enhanced error analysis:
-  - Detailed error summaries
-  - Root cause analysis
-  - Actionable debug checklists
-  - Code-level fix suggestions
-  - Corrected function implementations
+Error Agent automatically catches unhandled exceptions in your Python applications and:
 
-## Installation
+1. **Analyzes the error** using AI (Mistral-7B)
+2. **Provides insights** about what went wrong
+3. **Suggests fixes** with corrected code
+4. **Sends notifications** to your team via Slack or Google Chat
+5. **Preserves function signatures** exactly as they were
+
+## 🚀 How It Works
+
+1. **Error Detection**: Catches unhandled exceptions automatically
+2. **Context Analysis**: Analyzes your project structure and code
+3. **AI Processing**: Uses LLM to understand the error and generate solutions
+4. **Smart Output**: Provides actionable insights and corrected code
+5. **Team Notification**: Sends formatted reports to your communication channels
+
+## 📦 Installation
 
 ```bash
+git clone <repository-url>
+cd flask-ai-error-agent
 pip install -r requirements.txt
 ```
 
-## Usage
+## ⚙️ Setup
 
-1. Set up your environment variables:
+### 1. Environment Variables
 
 ```bash
 # For Slack integration
@@ -40,23 +39,30 @@ export SLACK_CHANNEL="your-channel-id"
 
 # For Google Chat integration
 export GOOGLE_CHAT_WEBHOOK="your-webhook-url"
+
+# LLM Service (default: local Ollama)
+export LLM_URL="http://localhost:11434"
 ```
 
-2. Basic usage in your application:
+### 2. Start LLM Service
+
+```bash
+# Install Ollama and start Mistral-7B
+ollama run mistral
+```
+
+## 💻 Usage
+
+### Basic Integration
 
 ```python
 from error_agent import ErrorAgent
 import os
 
-# Initialize the error agent with Slack
+# Initialize with Slack
 error_agent = ErrorAgent(
     slack_token=os.getenv("SLACK_TOKEN"),
     channel_id=os.getenv("SLACK_CHANNEL")
-)
-
-# Or initialize with Google Chat
-error_agent = ErrorAgent(
-    google_chat_webhook=os.getenv("GOOGLE_CHAT_WEBHOOK")
 )
 
 # Install the error handler
@@ -65,7 +71,7 @@ error_agent.install()
 # Your application code here...
 ```
 
-3. For Flask applications:
+### Flask Integration
 
 ```python
 from flask import Flask
@@ -77,10 +83,10 @@ error_agent = ErrorAgent(
     channel_id=os.getenv("SLACK_CHANNEL")
 )
 
-# The error handler will automatically catch unhandled exceptions
+# Automatically catches unhandled exceptions
 ```
 
-4. For FastAPI applications:
+### FastAPI Integration
 
 ```python
 from fastapi import FastAPI
@@ -92,43 +98,42 @@ error_agent = ErrorAgent(
     channel_id=os.getenv("SLACK_CHANNEL")
 )
 
-# The error handler will automatically catch unhandled exceptions
+# Automatically catches unhandled exceptions
 ```
 
-## Requirements
+## �� Requirements
 
-- Python 3.7+
-- Mistral-7B model running locally (default: http://localhost:11434)
-- Slack workspace with API token (for Slack integration)
-- Google Chat webhook URL (for Google Chat integration)
-- Required Python packages (see requirements.txt)
+- **Python**: 3.7+
+- **LLM Service**: Mistral-7B (via Ollama or compatible API)
+- **Messaging**: Slack workspace or Google Chat
+- **Dependencies**: See `requirements.txt`
 
-## Configuration
+## �� What You Get
 
-The ErrorAgent can be configured with the following parameters:
+When an error occurs, Error Agent sends you:
 
-- `slack_token`: Your Slack API token (for Slack integration)
-- `channel_id`: The Slack channel ID where error reports will be sent
-- `google_chat_webhook`: Webhook URL for Google Chat integration
-- `llm_url`: URL of the LLM service (default: http://localhost:11434)
-- `project_root`: Root directory of your project (default: current directory)
+- **Error Details**: Type, message, file, line number
+- **Context**: Function signature, docstring, related code
+- **AI Analysis**: Summary, root cause, debug checklist
+- **Fix Suggestions**: Corrected function with exact signature preserved
+- **Code Quality**: Production-ready, properly indented Python code
 
-## Error Reports
+## �� Benefits
 
-When an error occurs, the agent will send a formatted message containing:
+- **Zero Configuration**: Works out of the box
+- **Non-blocking**: Doesn't slow down your application
+- **Smart Analysis**: AI-powered error understanding
+- **Team Collaboration**: Instant error notifications
+- **Code Quality**: Preserves your exact function signatures
+- **Multiple Frameworks**: Flask, FastAPI, and more
 
-- Error type and message
-- File and line number where the error occurred
-- Function context and dependencies
-- Source code with highlighted error lines
-- Stack trace
-- LLM-generated insights including:
-  - Detailed error summary
-  - Root cause analysis
-  - Actionable debug checklist
-  - Code-level fix suggestions
-  - Corrected function implementation with:
-    - Preserved function signature
-    - Enhanced input validation
-    - Improved error handling
-    - Updated documentation
+## 📁 Project Structure
+flask-ai-error-agent/
+├── error_agent/ # Core package
+│ ├── agent.py # Main ErrorAgent class
+│ ├── llm.py # LLM integration
+│ ├── slack.py # Slack notifications
+│ ├── google_chat.py # Google Chat notifications
+│ └── tools.py # Project analysis utilities
+├── examples/ # Usage examples
+└── requirements.txt # Dependencies

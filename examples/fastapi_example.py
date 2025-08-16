@@ -35,11 +35,10 @@ error_agent.install()
 async def global_exception_handler(request: Request, exc: Exception):
     """Global exception handler for all unhandled exceptions."""
     logger.info(f"Global exception handler caught: {type(exc).__name__}: {str(exc)}")
-    
-    # Let the ErrorAgent handle the exception
-    error_agent.handle_exception(type(exc), exc, exc.__traceback__)
-    
-    # Return a JSON response
+
+    # Submit to background worker; do not block the response cycle
+    error_agent.submit_exception(type(exc), exc, exc.__traceback__)
+
     return JSONResponse(
         status_code=500,
         content={

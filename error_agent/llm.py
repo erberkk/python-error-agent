@@ -124,13 +124,6 @@ CRITICAL ANALYSIS REQUIREMENTS:
 6. Use realistic default values based on the variable's purpose and context
 7. FORBIDDEN: Never use different variable names than those shown in "Symbols on error line"
 
-EXAMPLE FOR KeyError FIX:
-FOR: problematic_data["missing_key"] 
-USE: problematic_data.get("missing_key", 80)
-
-FOR: data["nested"]["value"]  
-USE: data.get("nested", {{}}).get("value", None)
-
 CRITICAL: Use EXACTLY the variable names from "Symbols on error line" list above. No substitutions allowed.
 
 BANNED PLACEHOLDERS (will cause rejection):

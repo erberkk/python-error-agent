@@ -163,6 +163,380 @@ async def nested_error():
     
     return process_user_data("user123", user_data)
 
+@app.get("/large-function-error")
+async def large_function_error():
+    """
+    This endpoint demonstrates error handling in a large function (300+ lines).
+    The error occurs in a specific block, and the LLM should provide a targeted fix.
+    """
+    def massive_data_processor(data_input: dict) -> dict:
+        """
+        A large function that processes complex data through multiple stages.
+        This simulates a real-world scenario with a large function where 
+        an error occurs in a specific section.
+        """
+        # Stage 1: Initial validation (lines 1-30)
+        print("Starting data processing...")
+        result = {"processed": True, "stages": []}
+        
+        if not isinstance(data_input, dict):
+            raise TypeError("Input must be a dictionary")
+        
+        # Initialize tracking variables
+        processed_count = 0
+        error_count = 0
+        warning_count = 0
+        
+        # Stage 1: User validation
+        user_data = data_input.get("user", {})
+        if not user_data:
+            warning_count += 1
+            result["stages"].append({"stage": "user_validation", "status": "warning", "message": "No user data"})
+        else:
+            # Validate user ID
+            user_id = user_data.get("id")
+            if not user_id:
+                error_count += 1
+                result["stages"].append({"stage": "user_validation", "status": "error", "message": "Missing user ID"})
+            else:
+                result["stages"].append({"stage": "user_validation", "status": "success"})
+                processed_count += 1
+        
+        # Stage 2: Product data processing (lines 31-80)
+        products = data_input.get("products", [])
+        if not isinstance(products, list):
+            error_count += 1
+            result["stages"].append({"stage": "product_processing", "status": "error", "message": "Products must be a list"})
+        else:
+            processed_products = []
+            for idx, product in enumerate(products):
+                try:
+                    # Validate product structure
+                    if not isinstance(product, dict):
+                        error_count += 1
+                        continue
+                    
+                    # Check required fields
+                    required_fields = ["id", "name", "price", "category"]
+                    missing_fields = [field for field in required_fields if field not in product]
+                    if missing_fields:
+                        error_count += 1
+                        result["stages"].append({
+                            "stage": "product_processing", 
+                            "status": "error", 
+                            "message": f"Product {idx} missing fields: {missing_fields}"
+                        })
+                        continue
+                    
+                    # Process price
+                    price = product["price"]
+                    if not isinstance(price, (int, float)):
+                        try:
+                            price = float(price)
+                        except (ValueError, TypeError):
+                            error_count += 1
+                            continue
+                    
+                    # Category validation
+                    valid_categories = ["electronics", "clothing", "books", "home", "sports"]
+                    category = product["category"].lower()
+                    if category not in valid_categories:
+                        warning_count += 1
+                        category = "other"
+                    
+                    # Calculate discounted price
+                    discount_rate = 0.1 if category == "electronics" else 0.05
+                    discounted_price = price * (1 - discount_rate)
+                    
+                    processed_product = {
+                        "id": product["id"],
+                        "name": product["name"],
+                        "original_price": price,
+                        "discounted_price": discounted_price,
+                        "category": category,
+                        "discount_rate": discount_rate
+                    }
+                    processed_products.append(processed_product)
+                    processed_count += 1
+                    
+                except Exception as e:
+                    error_count += 1
+                    result["stages"].append({
+                        "stage": "product_processing", 
+                        "status": "error", 
+                        "message": f"Error processing product {idx}: {str(e)}"
+                    })
+            
+            result["processed_products"] = processed_products
+            result["stages"].append({"stage": "product_processing", "status": "success", "count": len(processed_products)})
+        
+        # Stage 3: Order processing (lines 81-150)
+        orders = data_input.get("orders", [])
+        if orders:
+            processed_orders = []
+            for order_idx, order in enumerate(orders):
+                try:
+                    # Validate order structure
+                    if not isinstance(order, dict):
+                        error_count += 1
+                        continue
+                    
+                    # Check order ID
+                    order_id = order.get("order_id")
+                    if not order_id:
+                        error_count += 1
+                        continue
+                    
+                    # Process order items
+                    items = order.get("items", [])
+                    if not isinstance(items, list):
+                        error_count += 1
+                        continue
+                    
+                    total_amount = 0
+                    processed_items = []
+                    
+                    for item_idx, item in enumerate(items):
+                        if not isinstance(item, dict):
+                            error_count += 1
+                            continue
+                        
+                        # Get item details
+                        item_id = item.get("product_id")
+                        quantity = item.get("quantity", 1)
+                        
+                        if not item_id:
+                            error_count += 1
+                            continue
+                        
+                        # Find product in processed products
+                        product_found = None
+                        for product in processed_products:
+                            if product["id"] == item_id:
+                                product_found = product
+                                break
+                        
+                        if not product_found:
+                            error_count += 1
+                            result["stages"].append({
+                                "stage": "order_processing", 
+                                "status": "error", 
+                                "message": f"Product {item_id} not found in processed products"
+                            })
+                            continue
+                        
+                        # Calculate item total
+                        item_price = product_found["discounted_price"]
+                        item_total = item_price * quantity
+                        total_amount += item_total
+                        
+                        processed_item = {
+                            "product_id": item_id,
+                            "product_name": product_found["name"],
+                            "quantity": quantity,
+                            "unit_price": item_price,
+                            "total_price": item_total
+                        }
+                        processed_items.append(processed_item)
+                    
+                    # Calculate taxes and fees
+                    tax_rate = 0.08
+                    tax_amount = total_amount * tax_rate
+                    shipping_fee = 10.0 if total_amount < 50 else 0.0
+                    final_amount = total_amount + tax_amount + shipping_fee
+                    
+                    processed_order = {
+                        "order_id": order_id,
+                        "items": processed_items,
+                        "subtotal": total_amount,
+                        "tax_amount": tax_amount,
+                        "shipping_fee": shipping_fee,
+                        "total_amount": final_amount
+                    }
+                    processed_orders.append(processed_order)
+                    processed_count += 1
+                    
+                except Exception as e:
+                    error_count += 1
+                    result["stages"].append({
+                        "stage": "order_processing", 
+                        "status": "error", 
+                        "message": f"Error processing order {order_idx}: {str(e)}"
+                    })
+            
+            result["processed_orders"] = processed_orders
+            result["stages"].append({"stage": "order_processing", "status": "success", "count": len(processed_orders)})
+        
+        # Stage 4: Analytics and reporting (lines 151-220)
+        analytics = {}
+        try:
+            # Calculate basic statistics
+            total_products = len(processed_products) if 'processed_products' in result else 0
+            total_orders = len(processed_orders) if 'processed_orders' in result else 0
+            
+            # Revenue analytics
+            total_revenue = 0
+            if 'processed_orders' in result:
+                for order in result['processed_orders']:
+                    total_revenue += order['total_amount']
+            
+            # Category analytics
+            category_stats = {}
+            if 'processed_products' in result:
+                for product in result['processed_products']:
+                    category = product['category']
+                    if category not in category_stats:
+                        category_stats[category] = {
+                            'count': 0,
+                            'total_value': 0,
+                            'avg_price': 0
+                        }
+                    category_stats[category]['count'] += 1
+                    category_stats[category]['total_value'] += product['discounted_price']
+                
+                # Calculate averages
+                for category in category_stats:
+                    count = category_stats[category]['count']
+                    if count > 0:
+                        category_stats[category]['avg_price'] = category_stats[category]['total_value'] / count
+            
+            # Customer analytics
+            customer_analytics = {}
+            if 'processed_orders' in result:
+                customer_orders = {}
+                for order in result['processed_orders']:
+                    # For this example, we'll simulate customer IDs
+                    customer_id = f"customer_{hash(order['order_id']) % 100}"
+                    if customer_id not in customer_orders:
+                        customer_orders[customer_id] = {
+                            'order_count': 0,
+                            'total_spent': 0,
+                            'orders': []
+                        }
+                    customer_orders[customer_id]['order_count'] += 1
+                    customer_orders[customer_id]['total_spent'] += order['total_amount']
+                    customer_orders[customer_id]['orders'].append(order['order_id'])
+                
+                customer_analytics = customer_orders
+            
+            analytics = {
+                'summary': {
+                    'total_products': total_products,
+                    'total_orders': total_orders,
+                    'total_revenue': total_revenue,
+                    'processed_items': processed_count,
+                    'error_count': error_count,
+                    'warning_count': warning_count
+                },
+                'category_breakdown': category_stats,
+                'customer_analytics': customer_analytics
+            }
+            
+            result['analytics'] = analytics
+            result["stages"].append({"stage": "analytics", "status": "success"})
+            
+        except Exception as e:
+            error_count += 1
+            result["stages"].append({
+                "stage": "analytics", 
+                "status": "error", 
+                "message": f"Analytics calculation failed: {str(e)}"
+            })
+        
+        # Stage 5: Final validation and error simulation (lines 221-280)
+        # Validate final result structure
+        required_result_fields = ["processed", "stages"]
+        for field in required_result_fields:
+            if field not in result:
+                raise ValueError(f"Missing required result field: {field}")
+        
+        # Simulate data quality checks
+        data_quality_score = 100
+        if error_count > 0:
+            data_quality_score -= (error_count * 10)
+        if warning_count > 0:
+            data_quality_score -= (warning_count * 5)
+        
+        data_quality_score = max(0, data_quality_score)
+        
+        problematic_data = data_input.get("quality_config", {})
+
+        quality_threshold = problematic_data["missing_key"]
+        
+        if data_quality_score < quality_threshold:
+            result["quality_warning"] = f"Data quality score {data_quality_score} below threshold {quality_threshold}"
+        
+        result["data_quality_score"] = data_quality_score
+        result["final_status"] = "completed"
+        
+        # Performance metrics
+        result["performance_metrics"] = {
+            "processed_items": processed_count,
+            "error_rate": error_count / max(1, processed_count) * 100,
+            "warning_rate": warning_count / max(1, processed_count) * 100
+        }
+        
+        # Final summary
+        if error_count == 0:
+            result["overall_status"] = "success"
+        elif error_count < 5:
+            result["overall_status"] = "partial_success"
+        else:
+            result["overall_status"] = "failed"
+        
+        result["stages"].append({"stage": "final_validation", "status": "success"})
+        
+        # Return processing results (lines 281-300)
+        result["summary"] = {
+            "total_stages": len(result["stages"]),
+            "successful_stages": len([s for s in result["stages"] if s["status"] == "success"]),
+            "failed_stages": len([s for s in result["stages"] if s["status"] == "error"]),
+            "warnings": warning_count,
+            "errors": error_count
+        }
+        
+        # Final cleanup and logging
+        print(f"Data processing completed. Errors: {error_count}, Warnings: {warning_count}")
+        
+        return result
+    
+    # Test data that will trigger the error
+    test_data = {
+        "user": {"id": "user123", "name": "Test User"},
+        "products": [
+            {"id": "prod1", "name": "Laptop", "price": 1000, "category": "electronics"},
+            {"id": "prod2", "name": "Book", "price": 25, "category": "books"}
+        ],
+        "orders": [
+            {
+                "order_id": "order123",
+                "items": [
+                    {"product_id": "prod1", "quantity": 1},
+                    {"product_id": "prod2", "quantity": 2}
+                ]
+            }
+        ]
+        # Note: 'quality_config' is missing, which will cause the KeyError
+    }
+    
+    # This will trigger a KeyError in the large function
+    result = massive_data_processor(test_data)
+    return {"result": result}
+
+@app.get("/simple-error-test")
+async def simple_error_test():
+    """
+    Simple endpoint to test error handling without complex logic.
+    This should trigger a KeyError that will be caught by the global exception handler.
+    """
+    # Simple data that will cause a KeyError
+    data = {"existing_key": "value"}
+    
+    # This will cause a KeyError
+    missing_value = data["missing_key"]  # KeyError here
+    
+    return {"result": missing_value}
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=5000) 

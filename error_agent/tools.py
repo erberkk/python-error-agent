@@ -2,6 +2,7 @@ import os
 import inspect
 import traceback
 from typing import Dict, Any, List, Optional, Set
+import re
 import importlib.util
 import logging
 import ast
@@ -186,6 +187,133 @@ def extract_function_context(file_path: str, function_name: str, line_number: in
         logger.error(f"Error extracting function context: {str(e)}")
         return f"Error extracting function context: {str(e)}"
 
+def extract_error_block_context(file_path: str, function_name: str, error_line: int, context_lines: int = 10) -> str:
+    """
+    Extract a focused code block around the error line for large functions.
+    This helps provide targeted fixes instead of rewriting entire large functions.
+    """
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+            
+        lines = content.split('\n')
+        tree = ast.parse(content)
+        
+        # Find the function definition
+        target_function = None
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function_name:
+                target_function = node
+                break
+                
+        if not target_function:
+            return "Function not found for error block analysis"
+            
+        function_start = target_function.lineno
+        function_end = target_function.end_lineno
+        function_length = function_end - function_start + 1
+        
+        # If function is small (<= 50 lines), return full context
+        if function_length <= 50:
+            return "Function is small enough - use full function context"
+            
+        # For large functions, extract the error block with intelligent boundaries
+        error_block = extract_intelligent_error_block(lines, target_function, error_line, context_lines)
+        
+        return f"""
+LARGE FUNCTION DETECTED ({function_length} lines)
+Function: {function_name} (lines {function_start}-{function_end})
+Error at line: {error_line}
+
+FOCUSED ERROR BLOCK:
+{error_block}
+
+CRITICAL INSTRUCTIONS FOR LARGE FUNCTIONS:
+1. Provide ONLY 5-15 lines of corrected code around the error line {error_line}
+2. Use EXACT variable names from the error block above
+3. Include clear comment indicating: "# REPLACE lines {error_line-5}-{error_line+5} in {function_name}"
+4. Do NOT include the entire function signature or other unrelated parts
+5. Focus solely on fixing the KeyError/error at line {error_line}
+"""
+        
+    except Exception as e:
+        logger.error(f"Error extracting error block context: {str(e)}")
+        return f"Error extracting error block context: {str(e)}"
+
+def extract_intelligent_error_block(lines: List[str], function_node: ast.AST, error_line: int, context_lines: int) -> str:
+    """
+    Intelligently extract a code block around the error, respecting Python block structure.
+    """
+    try:
+        function_start = function_node.lineno
+        function_end = function_node.end_lineno
+        
+        # Find the logical block that contains the error
+        error_block_start, error_block_end = find_containing_block(function_node, error_line)
+        
+        # Expand to include some context
+        block_start = max(function_start, error_block_start - context_lines)
+        block_end = min(function_end, error_block_end + context_lines)
+        
+        # Extract the lines with clearer marking
+        block_lines = []
+        for i in range(block_start - 1, block_end):  # Convert to 0-based indexing
+            if i < len(lines):
+                line_num = i + 1
+                if line_num == error_line:
+                    prefix = "ERROR>> "
+                else:
+                    prefix = "       "
+                block_lines.append(f"{prefix}{line_num:4d}: {lines[i]}")
+        
+        # Add header with exact error line information
+        header = f"ERROR LOCATION: Line {error_line} in function {function_node.name}"
+        return f"{header}\n" + "\n".join(block_lines)
+        
+    except Exception:
+        # Fallback to simple context extraction with clear error marking
+        start = max(0, error_line - context_lines - 1)
+        end = min(len(lines), error_line + context_lines)
+        
+        block_lines = []
+        for i in range(start, end):
+            line_num = i + 1
+            if line_num == error_line:
+                prefix = "ERROR>> "
+            else:
+                prefix = "       "
+            block_lines.append(f"{prefix}{line_num:4d}: {lines[i]}")
+        
+        header = f"ERROR LOCATION: Line {error_line}"
+        return f"{header}\n" + "\n".join(block_lines)
+
+def find_containing_block(function_node: ast.AST, error_line: int) -> tuple[int, int]:
+    """
+    Find the logical block (if, try, for, with, etc.) that contains the error line.
+    """
+    try:
+        containing_blocks = []
+        
+        for node in ast.walk(function_node):
+            if hasattr(node, 'lineno') and hasattr(node, 'end_lineno'):
+                if node.lineno <= error_line <= node.end_lineno:
+                    # This is a containing block
+                    containing_blocks.append((node.lineno, node.end_lineno, type(node).__name__))
+        
+        if not containing_blocks:
+            # No specific block found, use function boundaries
+            return function_node.lineno, function_node.end_lineno
+            
+        # Find the smallest containing block (most specific)
+        containing_blocks.sort(key=lambda x: x[1] - x[0])  # Sort by block size
+        smallest_block = containing_blocks[0]
+        
+        return smallest_block[0], smallest_block[1]
+        
+    except Exception:
+        # Fallback to function boundaries
+        return function_node.lineno, function_node.end_lineno
+
 def get_source_context(file_path: str, line_number: int, context_lines: int = 5) -> str:
     """
     Get source code context around the error line.
@@ -229,7 +357,8 @@ def analyze_error_context(error_type: str, error_message: str, traceback_list: L
                 "line": 0,
                 "function": "unknown",
                 "source_context": "No source context available",
-                "function_context": "No function context available"
+                "function_context": "No function context available",
+                "stack_trace": ""
             }
             
         frame = traceback_list[-1]
@@ -240,8 +369,46 @@ def analyze_error_context(error_type: str, error_message: str, traceback_list: L
         # Get source code context
         source_context = get_source_context(file_path, line_number)
         
+        # Read exact error line text
+        error_line_text = ""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                file_lines = f.readlines()
+            if 1 <= line_number <= len(file_lines):
+                error_line_text = file_lines[line_number - 1].rstrip("\n")
+        except Exception:
+            error_line_text = ""
+        
+        # Extract identifiers and quoted keys from the error line to guide the LLM
+        def _extract_error_identifiers(line: str) -> List[str]:
+            if not line:
+                return []
+            try:
+                identifiers = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", line))
+                quoted_keys = set(re.findall(r"['\"]([^'\"]+)['\"]", line))
+                combined = list(sorted(identifiers.union(quoted_keys)))
+                return combined[:15]
+            except Exception:
+                return []
+        error_identifiers = _extract_error_identifiers(error_line_text)
+        
         # Get complete function context
         function_context = extract_function_context(file_path, function_name, line_number)
+        
+        # Determine if this is a large function and extract relevant code block
+        error_block_context = extract_error_block_context(file_path, function_name, line_number)
+
+        # Build a formatted stack trace similar to Python's traceback format
+        formatted_traceback: List[str] = []
+        try:
+            for fr in traceback_list:
+                location = f"File \"{fr.filename}\", line {fr.lineno}, in {fr.name}"
+                code_line = fr.line or ""
+                formatted_traceback.append(location)
+                if code_line:
+                    formatted_traceback.append(f"    {code_line}")
+        except Exception:
+            formatted_traceback = []
         
         logger.info("Error context analysis complete")
         return {
@@ -251,7 +418,11 @@ def analyze_error_context(error_type: str, error_message: str, traceback_list: L
             "line": line_number,
             "function": function_name,
             "source_context": source_context,
-            "function_context": function_context
+            "function_context": function_context,
+            "error_line_text": error_line_text,
+            "error_identifiers": error_identifiers,
+            "error_block_context": error_block_context,
+            "stack_trace": "\n".join(formatted_traceback)
         }
         
     except Exception as e:
@@ -294,7 +465,7 @@ class ProjectIndexer:
                     continue
 
                 for node in ast.walk(tree):
-                    if isinstance(node, ast.FunctionDef):
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         name = node.name
                         start = getattr(node, "lineno", None)
                         end = getattr(node, "end_lineno", None)

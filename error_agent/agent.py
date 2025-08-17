@@ -2,6 +2,7 @@ import os
 import sys
 import traceback
 import logging
+import inspect
 from typing import Optional, Dict, Any, Type, Any
 from functools import wraps
 from queue import Queue
@@ -103,10 +104,63 @@ class ErrorAgent:
             tb_list = traceback.extract_tb(exc_traceback) if exc_traceback else []
         except Exception:
             tb_list = []
+        # Build a readable call chain and capture last-frame locals (best-effort)
+        call_chain_text = ""
+        locals_preview_text = ""
+        try:
+            if exc_traceback:
+                inner_frames = inspect.getinnerframes(exc_traceback)
+                chain_lines = []
+                for depth, fr in enumerate(inner_frames):
+                    indent = "  " * depth
+                    location = f"{fr.filename}:{fr.lineno} in {fr.function}"
+                    code_line = fr.code_context[0].strip() if fr.code_context else ""
+                    chain_lines.append(f"{indent}{location}")
+                    if code_line:
+                        chain_lines.append(f"{indent}  {code_line}")
+                call_chain_text = "\n".join(chain_lines)
+
+                # Locals from the last frame (where the exception occurred)
+                last_frame = inner_frames[-1].frame if inner_frames else None
+                if last_frame is not None and isinstance(last_frame.f_locals, dict):
+                    def safe_repr(value: Any, max_len: int = 300) -> str:
+                        try:
+                            text = repr(value)
+                        except Exception:
+                            text = f"<unreprable {type(value).__name__}>"
+                        if len(text) > max_len:
+                            return text[:max_len] + "..."
+                        return text
+
+                    local_lines = []
+                    # Sort variables by importance - error-related variables first
+                    error_related_vars = []
+                    other_vars = []
+                    
+                    for k, v in list(last_frame.f_locals.items()):
+                        if k.startswith("__") and k.endswith("__"):
+                            continue
+                        
+                        var_line = f"{k} = {safe_repr(v)}"
+                        
+                        # Prioritize variables that might be related to the error
+                        if any(keyword in k.lower() for keyword in ['data', 'config', 'threshold', 'quality', 'error', 'missing']):
+                            error_related_vars.append(var_line)
+                        else:
+                            other_vars.append(var_line)
+                    
+                    # Combine with error-related variables first
+                    local_lines = error_related_vars + other_vars[:10]  # Limit to avoid too much noise
+                    locals_preview_text = "\n".join(local_lines)
+        except Exception:
+            # Best-effort: do not fail if we can't inspect frames
+            pass
         self._queue.put({
             "exc_type": exc_type.__name__,
             "exc_message": str(exc_value),
             "tb_list": tb_list,
+            "call_chain": call_chain_text,
+            "locals_context": locals_preview_text,
         })
 
     def _worker_loop(self):
@@ -134,6 +188,14 @@ class ErrorAgent:
             self.project_root
         )
         logger.info("Error context analyzed")
+
+        # Enrich with call chain and locals captured at submission time
+        cc_text = job.get("call_chain") or ""
+        if cc_text:
+            error_context["call_chain"] = cc_text
+        lc_text = job.get("locals_context") or ""
+        if lc_text:
+            error_context["locals_context"] = lc_text
 
         # Enrich with related context from project index
         try:

@@ -59,10 +59,10 @@ ollama run mistral
 from error_agent import ErrorAgent
 import os
 
-# Initialize with Slack
+# Minimal initialization
 error_agent = ErrorAgent(
-    slack_token=os.getenv("SLACK_TOKEN"),
-    channel_id=os.getenv("SLACK_CHANNEL")
+    llm_url=os.getenv("LLM_URL", "http://localhost:11434"),
+    project_root=os.getcwd(),
 )
 
 # Install the error handler
@@ -79,8 +79,16 @@ from error_agent import ErrorAgent
 
 app = Flask(__name__)
 error_agent = ErrorAgent(
+    llm_url=os.getenv("LLM_URL", "http://localhost:11434"),
+    project_root=os.getcwd(),
     slack_token=os.getenv("SLACK_TOKEN"),
-    channel_id=os.getenv("SLACK_CHANNEL")
+    slack_channel=os.getenv("SLACK_CHANNEL"),
+    google_chat_webhook=os.getenv("GOOGLE_CHAT_WEBHOOK"),
+    require_local_llm=os.getenv("REQUIRE_LOCAL_LLM", "true").lower() == "true",
+    index_include=[p.strip() for p in os.getenv("INDEX_INCLUDE", "**/*.py").split(",") if p.strip()],
+    index_exclude=[p.strip() for p in os.getenv("INDEX_EXCLUDE", "**/tests/**,**/venv/**,**/.venv/**,**/__pycache__/**,**/node_modules/**").split(",") if p.strip()],
+    index_lazy=True,
+    index_background=True,
 )
 
 # Automatically catches unhandled exceptions
@@ -94,21 +102,29 @@ from error_agent import ErrorAgent
 
 app = FastAPI()
 error_agent = ErrorAgent(
+    llm_url=os.getenv("LLM_URL", "http://localhost:11434"),
+    project_root=os.getcwd(),
     slack_token=os.getenv("SLACK_TOKEN"),
-    channel_id=os.getenv("SLACK_CHANNEL")
+    slack_channel=os.getenv("SLACK_CHANNEL"),
+    google_chat_webhook=os.getenv("GOOGLE_CHAT_WEBHOOK"),
+    require_local_llm=os.getenv("REQUIRE_LOCAL_LLM", "true").lower() == "true",
+    index_include=[p.strip() for p in os.getenv("INDEX_INCLUDE", "**/*.py").split(",") if p.strip()],
+    index_exclude=[p.strip() for p in os.getenv("INDEX_EXCLUDE", "**/tests/**,**/venv/**,**/.venv/**,**/__pycache__/**,**/node_modules/**").split(",") if p.strip()],
+    index_lazy=True,
+    index_background=True,
 )
 
 # Automatically catches unhandled exceptions
 ```
 
-## �� Requirements
+## Requirements
 
 - **Python**: 3.7+
 - **LLM Service**: Mistral-7B (via Ollama or compatible API)
 - **Messaging**: Slack workspace or Google Chat
 - **Dependencies**: See `requirements.txt`
 
-## �� What You Get
+## What You Get
 
 When an error occurs, Error Agent sends you:
 
@@ -118,7 +134,7 @@ When an error occurs, Error Agent sends you:
 - **Fix Suggestions**: Corrected function with exact signature preserved
 - **Code Quality**: Production-ready, properly indented Python code
 
-## �� Benefits
+## Benefits
 
 - **Zero Configuration**: Works out of the box
 - **Non-blocking**: Doesn't slow down your application

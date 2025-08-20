@@ -6,6 +6,7 @@ import re
 import importlib.util
 import logging
 import ast
+import fnmatch
 
 logger = logging.getLogger(__name__)
 
@@ -442,22 +443,78 @@ class ProjectIndexer:
     Build a lightweight index of project functions for fast lookup of
     related function sources during error analysis.
     """
-    def __init__(self, project_root: str):
+    def __init__(
+        self,
+        project_root: str,
+        include_globs: Optional[List[str]] = None,
+        exclude_globs: Optional[List[str]] = None,
+    ):
         self.project_root = project_root
         self.functions_by_file: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self.functions_by_name: Dict[str, List[Dict[str, Any]]] = {}
 
+        # Default patterns
+        self.include_globs: List[str] = include_globs or ["**/*.py"]
+        self.exclude_globs: List[str] = exclude_globs or [
+            "**/.git/**",
+            "**/__pycache__/**",
+            "**/.venv/**",
+            "**/venv/**",
+            "**/env/**",
+            "**/node_modules/**",
+            "**/.mypy_cache/**",
+            "**/.pytest_cache/**",
+            "**/dist/**",
+            "**/build/**",
+            "**/.idea/**",
+            "**/.vscode/**",
+        ]
+
+    def _normalize_rel(self, path: str) -> str:
+        rel = os.path.relpath(path, self.project_root)
+        # For files exactly at root, relpath can be '.'; normalize to empty prefix
+        if rel == ".":
+            rel = ""
+        return rel.replace("\\", "/")
+
+    def _is_excluded(self, rel_path: str) -> bool:
+        # Ensure forward slashes
+        rel_path = rel_path.replace("\\", "/")
+        # Try matching as-is and with trailing slash to cover directory-style patterns
+        candidates = {rel_path, rel_path.rstrip("/") + "/"}
+        for pat in self.exclude_globs:
+            for c in candidates:
+                if fnmatch.fnmatch(c, pat):
+                    return True
+        return False
+
+    def _is_included(self, rel_path: str) -> bool:
+        rel_path = rel_path.replace("\\", "/")
+        for pat in self.include_globs:
+            if fnmatch.fnmatch(rel_path, pat):
+                return True
+        return False
+
     def build_index(self) -> None:
         logger.info("Building project index (functions and calls)...")
         for root, dirs, files in os.walk(self.project_root):
-            # Skip common non-source directories
-            dirs[:] = [d for d in dirs if d not in {".git", "__pycache__", "venv", ".venv", "env"}]
+            # Prune directories based on exclude patterns
+            pruned_dirs: List[str] = []
+            for d in list(dirs):
+                abs_dir = os.path.join(root, d)
+                rel_dir = self._normalize_rel(abs_dir)
+                if self._is_excluded(rel_dir + "/"):
+                    continue  # skip this directory entirely
+                pruned_dirs.append(d)
+            dirs[:] = pruned_dirs
+
             for fname in files:
-                if not fname.endswith(".py"):
+                abs_path = os.path.join(root, fname)
+                rel_path = self._normalize_rel(abs_path)
+                if not self._is_included(rel_path) or self._is_excluded(rel_path):
                     continue
-                path = os.path.join(root, fname)
                 try:
-                    with open(path, "r", encoding="utf-8") as f:
+                    with open(abs_path, "r", encoding="utf-8") as f:
                         content = f.read()
                     tree = ast.parse(content)
                     lines = content.splitlines()
@@ -488,7 +545,7 @@ class ProjectIndexer:
 
                         entry = {
                             "name": name,
-                            "file": path,
+                            "file": abs_path,
                             "lineno": start,
                             "end_lineno": end,
                             "doc": doc,
@@ -496,11 +553,14 @@ class ProjectIndexer:
                             "calls": sorted(calls)
                         }
 
-                        self.functions_by_file.setdefault(path, {})[name] = entry
+                        self.functions_by_file.setdefault(abs_path, {})[name] = entry
                         self.functions_by_name.setdefault(name, []).append(entry)
 
-        logger.info("Project index built: %d files, %d unique functions",
-                    len(self.functions_by_file), len(self.functions_by_name))
+        logger.info(
+            "Project index built: %d files, %d unique functions",
+            len(self.functions_by_file),
+            sum(len(v) for v in self.functions_by_file.values()),
+        )
 
     def get_related_context(self, file_path: str, function_name: str, max_related: int = 5) -> str:
         """

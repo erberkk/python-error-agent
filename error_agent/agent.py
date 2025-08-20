@@ -26,7 +26,12 @@ class ErrorAgent:
         slack_token: Optional[str] = None,
         slack_channel: Optional[str] = None,
         google_chat_webhook: Optional[str] = None,
-        app_name: str = "Error Agent"  # Default app name
+        app_name: str = "Error Agent",  # Default app name
+        require_local_llm: bool = False,
+        index_include: Optional[list] = None,
+        index_exclude: Optional[list] = None,
+        index_lazy: bool = True,
+        index_background: bool = True,
     ):
         """
         Initialize the error agent.
@@ -41,7 +46,7 @@ class ErrorAgent:
             app_name: Name of the application for Google Chat messages
         """
         logger.info("Initializing Error Agent")
-        self.llm = LLMHandler(llm_url, model)
+        self.llm = LLMHandler(llm_url, model, require_local_llm=require_local_llm)
         self.project_root = project_root
         
         # Initialize messengers based on provided credentials
@@ -60,12 +65,26 @@ class ErrorAgent:
             
         logger.info(f"Error Agent initialized with model: {model}")
         
-        # Build project function index once at startup
-        self.indexer = ProjectIndexer(self.project_root)
-        try:
-            self.indexer.build_index()
-        except Exception as e:
-            logger.warning(f"Project indexing failed: {e}")
+        # Initialize project indexer (lazy/background indexing for large repos)
+        self.indexer = ProjectIndexer(
+            self.project_root,
+            include_globs=index_include,
+            exclude_globs=index_exclude,
+        )
+        def _build_index_safe():
+            try:
+                self.indexer.build_index()
+            except Exception as e:
+                logger.warning(f"Project indexing failed: {e}")
+
+        if not index_lazy and not index_background:
+            _build_index_safe()
+        elif index_background:
+            try:
+                Thread(target=_build_index_safe, name="ProjectIndexer", daemon=True).start()
+                logger.info("Project indexing scheduled in background")
+            except Exception as e:
+                logger.warning(f"Failed to start background indexer: {e}")
         
         # Initialize background worker for non-blocking error handling
         self._queue: Queue = Queue()
@@ -222,6 +241,11 @@ class ErrorAgent:
 
         # Get LLM insights
         logger.info("Requesting LLM analysis...")
+        # Provide project_root for redaction/masking
+        try:
+            error_context["project_root"] = self.project_root
+        except Exception:
+            pass
         insights = self.llm.get_error_insights(error_context, error_context.get('source_context', ''))
         logger.info("LLM analysis received")
 

@@ -25,7 +25,14 @@ error_agent = ErrorAgent(
     slack_channel=os.getenv("SLACK_CHANNEL"),
     # Google Chat configuration (optional)
     google_chat_webhook=os.getenv("GOOGLE_CHAT_WEBHOOK"),
-    app_name=os.getenv("APP_NAME", "test")
+    app_name=os.getenv("APP_NAME", "Error Agent"),
+    # Security and privacy
+    require_local_llm=os.getenv("REQUIRE_LOCAL_LLM", "true").lower() == "true",
+    # Index configuration for large repos
+    index_include=[p.strip() for p in os.getenv("INDEX_INCLUDE", "**/*.py").split(",") if p.strip()],
+    index_exclude=[p.strip() for p in os.getenv("INDEX_EXCLUDE", "**/tests/**,**/venv/**,**/.venv/**,**/__pycache__/**,**/node_modules/**").split(",") if p.strip()],
+    index_lazy=True,
+    index_background=True,
 )
 
 # Install error handler

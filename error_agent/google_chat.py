@@ -1,7 +1,7 @@
 import logging
-import requests
 from typing import Dict, Any
 from datetime import datetime
+from .helpers import make_post_request
 
 logger = logging.getLogger(__name__)
 
@@ -32,11 +32,13 @@ class GoogleChatMessenger:
             message = self._create_message(error_context, insights)
             logger.info("Sending message to Google Chat...")
             
-            response = requests.post(
-                self.webhook_url,
-                json=message
+            response = make_post_request(
+                url=self.webhook_url,
+                json_data=message,
+                timeout=(5, 15),  # 5s connect, 15s read timeout for webhook
+                max_retries=3,    # Webhook calls can be retried more
+                backoff_factor=0.3
             )
-            response.raise_for_status()
             
             logger.info("Message sent successfully to Google Chat")
         except Exception as e:

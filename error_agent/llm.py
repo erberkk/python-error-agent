@@ -1,11 +1,11 @@
 import logging
-import requests
 from typing import Dict, Any, List, Optional
+from .helpers import make_post_request, sanitize_error_context, sanitize_text
 
 logger = logging.getLogger(__name__)
 
 class LLMHandler:
-    def __init__(self, llm_url: str, model: str = "mistral"):
+    def __init__(self, llm_url: str, model: str = "mistral", require_local_llm: bool = False):
         """
         Initialize the LLM handler.
         
@@ -16,6 +16,7 @@ class LLMHandler:
         logger.info(f"Initializing LLM Handler with URL: {llm_url} and model: {model}")
         self.llm_url = llm_url.rstrip('/')
         self.model = model
+        self.require_local_llm = require_local_llm
         
     def get_error_insights(self, error_context: Dict[str, Any], source_code: str) -> Dict[str, Any]:
         """
@@ -29,20 +30,29 @@ class LLMHandler:
             Dictionary containing LLM-generated insights
         """
         try:
-            prompt = self._construct_prompt(error_context, source_code)
+            # Sanitize sensitive data before constructing the prompt
+            prompt = self._construct_prompt(
+                sanitize_error_context(error_context, error_context.get("project_root")),
+                sanitize_text(source_code, error_context.get("project_root")) if isinstance(source_code, str) else source_code,
+            )
+            # Optional: enforce local LLM usage
+            if self.require_local_llm and not (self.llm_url.startswith("http://localhost") or self.llm_url.startswith("http://127.0.0.1") or self.llm_url.startswith("https://localhost")):
+                raise RuntimeError("Remote LLM is disabled by configuration (require_local_llm=True)")
             logger.info(f"Sending request to LLM using model: {self.model}")
-            response = requests.post(
-                f"{self.llm_url}/api/generate",
-                json={
+            response = make_post_request(
+                url=f"{self.llm_url}/api/generate",
+                json_data={
                     "model": self.model,
                     "prompt": prompt,
                     "stream": False,
                     # If the provider supports it, this flag often enforces JSON-only
                     "format": "json"
                 },
-                headers={"Content-Type": "application/json"}
+                headers={"Content-Type": "application/json"},
+                timeout=(10, 60),  # 10s connect, 60s read timeout for LLM
+                max_retries=2,     # LLM calls are expensive, limit retries
+                backoff_factor=0.5
             )
-            response.raise_for_status()
             
             logger.info("Received response from LLM")
             insights = self._parse_response(response.json(), error_context)
@@ -75,19 +85,19 @@ class LLMHandler:
         error_line_text = error_context.get("error_line_text", "")
         error_identifiers = error_context.get("error_identifiers", [])
         return f"""
-You are an expert Python developer and static analyzer. Analyze the error and return ONLY a valid JSON object matching the schema below. Do not include any extra text before or after the JSON. Do NOT use markdown fences.
+You are an expert Python developer and static analyzer. Analyze the error and provide detailed insights using the EXACT variable names, function context, and code structure from the provided error.
 
 ERROR CONTEXT:
 Type: {error_context['error_type']}
 File: {error_context['file']}:{error_context['line']}
 Function: {error_context['function']}
 Message: {error_context['error_message']}
- Error line: {error_line_text}
- Symbols on error line (must use these exact names/keys): {", ".join(map(str, error_identifiers))}
- 
+Error line: {error_line_text}
+Symbols on error line (use these EXACT names): {", ".join(map(str, error_identifiers))}
+
 CALL CHAIN (how we got here):
 {call_chain}
- 
+
 LOCALS CONTEXT (variables and state around error):
 {locals_context}
 
@@ -112,79 +122,48 @@ SOURCE CODE SNIPPET (around error site):
 RELATED CONTEXT (functions called by the failing function found elsewhere in the project):
 {related}
 
-CRITICAL ANALYSIS REQUIREMENTS:
-1. The error occurred at the EXACT line shown in "ERROR LOCATION" - focus ONLY on that line
-2. Look at the "ERROR>>" marked line - that's where the KeyError/error happened
-3. MANDATORY: Use ONLY the symbols listed in "Symbols on error line" - these are the EXACT variable names and keys from the actual code
-4. For dictionary KeyError: Check if key exists before accessing, or use .get() with appropriate default
-5. For LARGE functions (>50 lines): 
-   - Provide ONLY 3-8 lines of corrected code around the error line
-   - Start with comment "# REPLACE lines X-Y in function_name"
-   - Do NOT include function signature or other unrelated code
-6. Use realistic default values based on the variable's purpose and context
-7. FORBIDDEN: Never use different variable names than those shown in "Symbols on error line"
+ANALYSIS REQUIREMENTS:
+1. Use ONLY the exact variable names from "Symbols on error line"
+2. Connect the error to the actual test data or input that caused it
+3. Focus on the EXACT failing line - not just related setup code
+4. Provide fix suggestions that directly address the failing line where the KeyError occurs
+5. Use the actual function context to understand what the code is trying to do
+6. For KeyError: identify WHY the key is missing AND fix the exact line that's failing
+7. Provide realistic default values based on the variable name and business context
+8. Use ONLY the exact line numbers visible in the provided code context - do not guess or invent line numbers
 
-CRITICAL: Use EXACTLY the variable names from "Symbols on error line" list above. No substitutions allowed.
+CRITICAL FORMATTING:
+- Write a detailed summary that identifies the exact line and location within the function
+- Root cause should connect the error to the actual data/context that triggered it  
+- Debug checklist should be specific to the actual variables and logic in this function
+- Fix suggestions must target the EXACT failing line, not just related setup
+- Use diff-style code corrections that show before/after
+- Provide meaningful default values (e.g., for thresholds use 50, 70, 100; for configs use realistic structures)
 
-BANNED PLACEHOLDERS (will cause rejection):
-- some_dict, my_dict, your_dict
-- default_value, appropriate_default_value, realistic_default_value  
-- foo, bar, baz
-- variable_name, key_name
+Return ONLY valid JSON with these exact keys: summary, root_cause, debug_checklist, fix_suggestions, corrected_function
 
-CRITICAL JSON FORMATTING RULES:
-- Return ONLY valid JSON - no extra text, no markdown, no explanations
-- Use double quotes for all strings: "example" not 'example'
-- Escape any quotes within strings: "He said \"Hello\""
-- Ensure all brackets and braces are properly closed
-- No trailing commas after the last item in arrays/objects
-
-STRICT REQUIREMENTS FOR THE JSON YOU RETURN:
-- Return ONLY valid JSON (no markdown, no backticks, no prose outside JSON)
-- Keys must exactly be: summary, root_cause, debug_checklist, fix_suggestions, corrected_function
-- debug_checklist: array of 4-7 short actionable strings specific to this error
-- fix_suggestions: array of 1 object with: description (string) only
-- corrected_function: object with: description (string), code (string)
-- In all code strings: provide fully runnable, correctly indented Python; avoid external/unavailable symbols.
-- CRITICAL CONTRACT ABOUT THE FUNCTION SIGNATURE:
-  * Keep the function signature EXACTLY as provided above, character-for-character, including:
-    - the function name
-    - whether it is async or not (preserve 'async ' if present)
-    - parameters, their order, annotations, and default values
-    - the return annotation (if any)
-  * Do NOT add or remove parameters. Do NOT change names, types, defaults, or async/sync behavior.
-  * The corrected_function.code MUST start with exactly that signature line followed by a colon.
-- Preserve the function's return structure. Do not change the returned schema or keys; only add validation and clear error messages as needed.
-
-Return JSON in this exact shape (fill with your content):
-
-FOR SMALL FUNCTIONS (<= 50 lines):
+Format your response like this example structure:
 {{
-  "summary": "Brief error description",
-  "root_cause": "Specific cause analysis",
-  "debug_checklist": ["Specific check 1", "Specific check 2", "..."],
+  "summary": "KeyError at line {error_context['line']} in {error_context['function']}: accessing '{error_context['error_message']}' key in [actual_variable_name] dictionary failed because [specific reason based on context]",
+  "root_cause": "The [actual_variable_name] dictionary does not contain the '[actual_key_name]' key. Looking at the code context: [explain the data flow and why this key is missing, referencing actual test data or input structure]. The failing line is '[exact_failing_code_line]' which tries to access a non-existent key.",
+  "debug_checklist": [
+    "Check if [actual_variable_name] contains the '[actual_key_name]' key before accessing in the failing line",
+    "Verify the test_data includes the required '[parent_key]' field with '[actual_key_name]' inside",
+    "Examine the exact line where [actual_variable_name] is populated from [source_dict] (reference actual line numbers from the provided code context)",
+    "Add proper '[parent_key]' structure to test_data with realistic values"
+  ],
   "fix_suggestions": [
-    {{"description": "Specific fix description using actual variable names"}}
+    {{
+      "description": "Replace the failing line '[exact_failing_code_line]' with safe dictionary access: [actual_variable_name].get('[actual_key_name]', [meaningful_default_value]). Example: quality_threshold = problematic_data.get('missing_key', 70). Alternative: add complete test_data structure: 'quality_config': {{'missing_key': 70}}"
+    }}
   ],
   "corrected_function": {{
-    "description": "What was changed in the function",
-    "code": "def FUNCTION_WITH_SAME_SIGNATURE_AS_ABOVE(...):\n    # Complete corrected function"
+    "description": "Changed line {error_context['line']} to use safe dictionary access with meaningful default value",
+    "code": "# REPLACE line {error_context['line']} in {error_context['function']}\n# Before: [exact_failing_code_line]\n# After:\n[variable_name] = [dict_name].get('[key_name]', [meaningful_default_value])"
   }}
 }}
 
-FOR LARGE FUNCTIONS (> 50 lines):
-{{
-  "summary": "Brief error description",
-  "root_cause": "Specific cause analysis",
-  "debug_checklist": ["Specific check 1", "Specific check 2", "..."],
-  "fix_suggestions": [
-    {{"description": "Specific fix description using actual variable names"}}
-  ],
-  "corrected_function": {{
-    "description": "What was changed and where it should be placed",
-    "code": "# REPLACE lines X-Y in function_name\n# Only the corrected block here (5-15 lines max)"
-  }}
-}}
+CRITICAL: Use the EXACT variable names from the error context. NO generic placeholders like 'my_dict', 'some_key', etc.
 """
         
     def _parse_response(self, response: Dict[str, Any], error_context: Dict[str, Any]) -> Dict[str, Any]:

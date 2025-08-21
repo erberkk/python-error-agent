@@ -46,10 +46,18 @@ class LLMHandler:
                     "prompt": prompt,
                     "stream": False,
                     # If the provider supports it, this flag often enforces JSON-only
-                    "format": "json"
+                    "format": "json",
+                    # Add parameters to prevent truncated responses
+                    "options": {
+                        "temperature": 0.1,      # Lower temperature for more consistent JSON
+                        "top_p": 0.9,           # Limit token selection for better structure
+                        "stop": ["</json>"],    # Stop tokens to prevent overrun
+                        "num_predict": 2048,    # Limit response length but allow reasonable size
+                        "repeat_penalty": 1.1   # Reduce repetition
+                    }
                 },
                 headers={"Content-Type": "application/json"},
-                timeout=(10, 60),  # 10s connect, 60s read timeout for LLM
+                timeout=(15, 90),  # Increased timeout for more complex analysis
                 max_retries=2,     # LLM calls are expensive, limit retries
                 backoff_factor=0.5
             )
@@ -85,7 +93,7 @@ class LLMHandler:
         error_line_text = error_context.get("error_line_text", "")
         error_identifiers = error_context.get("error_identifiers", [])
         return f"""
-You are an expert Python developer and static analyzer. Analyze the error and provide detailed insights using the EXACT variable names, function context, and code structure from the provided error.
+You are an expert Python developer and static analyzer. Carefully analyze the specific error type, message, and code context to understand what actually went wrong. Provide detailed insights using the EXACT variable names, function context, and code structure from the provided error.
 
 ERROR CONTEXT:
 Type: {error_context['error_type']}
@@ -95,11 +103,15 @@ Message: {error_context['error_message']}
 Error line: {error_line_text}
 Symbols on error line (use these EXACT names): {", ".join(map(str, error_identifiers))}
 
+CRITICAL: The error message "{error_context['error_message']}" contains specific details about what went wrong.
+If it says "got int" or "expected str", the problem is TYPE MISMATCH, not missing keys.
+
 CALL CHAIN (how we got here):
 {call_chain}
 
-LOCALS CONTEXT (variables and state around error):
+LOCALS CONTEXT (variables and state around error - CHECK ACTUAL VALUES HERE):
 {locals_context}
+IMPORTANT: Look at the actual values in locals context to understand what data caused the error.
 
 STACK TRACE:
 {stack}
@@ -123,44 +135,34 @@ RELATED CONTEXT (functions called by the failing function found elsewhere in the
 {related}
 
 ANALYSIS REQUIREMENTS:
-1. Use ONLY the exact variable names from "Symbols on error line"
-2. Connect the error to the actual test data or input that caused it
-3. Focus on the EXACT failing line - not just related setup code
-4. Provide fix suggestions that directly address the failing line where the KeyError occurs
-5. Use the actual function context to understand what the code is trying to do
-6. For KeyError: identify WHY the key is missing AND fix the exact line that's failing
-7. Provide realistic default values based on the variable name and business context
-8. Use ONLY the exact line numbers visible in the provided code context - do not guess or invent line numbers
+1. PARSE THE ERROR MESSAGE CAREFULLY - it contains the exact problem details
+2. Analyze the actual error type and message - don't assume it's always a KeyError  
+3. Look for type information in error messages (e.g., "got int", "expected str", "missing key")
+4. Use ONLY the exact variable names from "Symbols on error line"
+5. Connect the error to the actual test data or input that caused it (check locals_context for real values)
+6. Focus on the EXACT failing line and understand what it's trying to do
+7. Identify the root cause based on error message + actual data values, not assumptions
+8. Provide fix suggestions that prevent the error from occurring (input validation, type conversion, defaults) rather than just catching exceptions
+7. Use realistic default values based on the variable name and business context
+8. Use ONLY the exact line numbers visible in the provided code context
 
 CRITICAL FORMATTING:
-- Write a detailed summary that identifies the exact line and location within the function
-- Root cause should connect the error to the actual data/context that triggered it  
-- Debug checklist should be specific to the actual variables and logic in this function
-- Fix suggestions must target the EXACT failing line, not just related setup
-- Use diff-style code corrections that show before/after
-- Provide meaningful default values (e.g., for thresholds use 50, 70, 100; for configs use realistic structures)
+- Write a concise but accurate summary identifying the exact failing line
+- Root cause should be brief but connect error to actual data that triggered it  
+- Debug checklist: max 4 specific items about variables and logic in this function
+- Fix suggestions: max 2 items targeting the EXACT failing line
+- Use meaningful defaults (thresholds: 50-100; configs: realistic structures)
+- In corrected_function code: maintain proper Python indentation and formatting
 
 Return ONLY valid JSON with these exact keys: summary, root_cause, debug_checklist, fix_suggestions, corrected_function
 
-Format your response like this example structure:
+Example JSON structure:
 {{
-  "summary": "KeyError at line {error_context['line']} in {error_context['function']}: accessing '{error_context['error_message']}' key in [actual_variable_name] dictionary failed because [specific reason based on context]",
-  "root_cause": "The [actual_variable_name] dictionary does not contain the '[actual_key_name]' key. Looking at the code context: [explain the data flow and why this key is missing, referencing actual test data or input structure]. The failing line is '[exact_failing_code_line]' which tries to access a non-existent key.",
-  "debug_checklist": [
-    "Check if [actual_variable_name] contains the '[actual_key_name]' key before accessing in the failing line",
-    "Verify the test_data includes the required '[parent_key]' field with '[actual_key_name]' inside",
-    "Examine the exact line where [actual_variable_name] is populated from [source_dict] (reference actual line numbers from the provided code context)",
-    "Add proper '[parent_key]' structure to test_data with realistic values"
-  ],
-  "fix_suggestions": [
-    {{
-      "description": "Replace the failing line '[exact_failing_code_line]' with safe dictionary access: [actual_variable_name].get('[actual_key_name]', [meaningful_default_value]). Example: quality_threshold = problematic_data.get('missing_key', 70). Alternative: add complete test_data structure: 'quality_config': {{'missing_key': 70}}"
-    }}
-  ],
-  "corrected_function": {{
-    "description": "Changed line {error_context['line']} to use safe dictionary access with meaningful default value",
-    "code": "# REPLACE line {error_context['line']} in {error_context['function']}\n# Before: [exact_failing_code_line]\n# After:\n[variable_name] = [dict_name].get('[key_name]', [meaningful_default_value])"
-  }}
+  "summary": "{error_context['error_type']} at line {error_context['line']} in {error_context['function']}: [brief description of what went wrong]",
+  "root_cause": "[Explain WHY this error occurred based on the actual data and code context]",
+  "debug_checklist": ["[4 specific debugging steps for this exact error]"],
+  "fix_suggestions": [{{"description": "[Practical solution targeting the actual problem]"}}],
+  "corrected_function": {{"description": "[What was changed]", "code": "# BEFORE:\\n[original failing line]\\n\\n# AFTER:\\n[prevention-focused fix: input validation, type conversion, or default values]"}}
 }}
 
 CRITICAL: Use the EXACT variable names from the error context. NO generic placeholders like 'my_dict', 'some_key', etc.
@@ -213,26 +215,21 @@ CRITICAL: Use the EXACT variable names from the error context. NO generic placeh
             else:
                 insights["corrected_function"] = {"description": "", "code": ""}
 
-            # Enforce exact function signature at the top of corrected_function.code if available
-            target_signature = str(error_context.get("function_signature", "")).strip()
-            if target_signature:
-                cf_obj = insights.get("corrected_function", {}) or {}
-                code_text = cf_obj.get("code", "") or ""
-                if code_text:
-                    code_lines = code_text.splitlines()
-                    fn_idx = None
-                    for i, ln in enumerate(code_lines):
-                        ls = ln.strip()
-                        if ls.startswith("def ") or ls.startswith("async def "):
-                            fn_idx = i
-                            break
-                    desired_first_line = f"{target_signature}:"
-                    if fn_idx is None:
-                        code_lines = [desired_first_line] + [ln for ln in code_lines if ln.strip()]
-                    else:
-                        code_lines[fn_idx] = desired_first_line
-                    cf_obj["code"] = "\n".join(code_lines)
-                    insights["corrected_function"] = cf_obj
+            # Ensure corrected_function has proper BEFORE/AFTER format
+            cf_obj = insights.get("corrected_function", {}) or {}
+            code_text = cf_obj.get("code", "") or ""
+            
+            # If code doesn't already have BEFORE/AFTER format, try to improve it
+            if code_text and "# BEFORE:" not in code_text and "# AFTER:" not in code_text:
+                error_line = error_context.get("error_line_text", "").strip()
+                if error_line:
+                    # Try to extract a meaningful fix from the code
+                    lines = code_text.strip().split('\n')
+                    if lines:
+                        # Format as BEFORE/AFTER with proper indentation
+                        formatted_code = f"# BEFORE:\n{error_line}\n\n# AFTER:\n" + '\n'.join(lines)
+                        cf_obj["code"] = formatted_code
+                        insights["corrected_function"] = cf_obj
 
             logger.info("Successfully parsed LLM JSON response")
             return insights
@@ -267,19 +264,115 @@ CRITICAL: Use the EXACT variable names from the error context. NO generic placeh
                 return insights
             except Exception:
                 pass
+            
+            # Strategy 3: Handle truncated JSON responses
+            try:
+                import json, re as _re
+                cleaned = raw_backup.strip()
                 
-            # Strategy 3: Log raw response for debugging
-            logger.error(f"Raw LLM response that failed to parse: {raw_backup[:500]}...")
+                # Check if response seems truncated (doesn't end with } or ])
+                if cleaned and not cleaned.endswith(('}', ']', '"')):
+                    logger.info("Detected truncated response, attempting to repair...")
+                    
+                    # Try to find the last complete field before truncation
+                    lines = cleaned.split('\n')
+                    valid_lines = []
+                    
+                    for line in lines:
+                        line = line.strip()
+                        if line:
+                            # Check if line seems complete (ends with , or is a complete field)
+                            if (line.endswith(',') or 
+                                line.endswith('"') or 
+                                line.endswith('}') or 
+                                line.endswith(']') or
+                                ':' in line and (line.endswith(',') or line.count('"') % 2 == 0)):
+                                valid_lines.append(line)
+                            else:
+                                # This line seems truncated, stop here
+                                break
+                    
+                    if valid_lines:
+                        # Try to construct valid JSON from valid lines
+                        reconstructed = '{\n' + '\n'.join(valid_lines)
+                        
+                        # Remove trailing comma if present
+                        if reconstructed.rstrip().endswith(','):
+                            reconstructed = reconstructed.rstrip()[:-1]
+                        
+                        # Close the JSON object
+                        reconstructed += '\n}'
+                        
+                        # Try to parse the reconstructed JSON
+                        insights = json.loads(reconstructed)
+                        logger.info("Successfully repaired truncated JSON using strategy 3")
+                        
+                        # Fill in missing required fields if needed
+                        required_fields = ["summary", "root_cause", "debug_checklist", "fix_suggestions", "corrected_function"]
+                        for field in required_fields:
+                            if field not in insights:
+                                if field == "debug_checklist":
+                                    insights[field] = ["Response was truncated, check LLM service"]
+                                elif field == "fix_suggestions":
+                                    insights[field] = []
+                                elif field == "corrected_function":
+                                    insights[field] = {"description": "", "code": ""}
+                                else:
+                                    insights[field] = f"[Truncated response - {field} incomplete]"
+                        
+                        return insights
+                        
+            except Exception as ex:
+                logger.warning(f"Strategy 3 (truncated JSON repair) failed: {str(ex)}")
+                pass
+            
+            # Strategy 4: Try to extract partial information using regex
+            try:
+                import json, re as _re
+                
+                # Extract summary if present
+                summary_match = _re.search(r'"summary"\s*:\s*"([^"]*)"', raw_backup)
+                summary = summary_match.group(1) if summary_match else "Failed to parse LLM response"
+                
+                # Extract root cause if present  
+                root_cause_match = _re.search(r'"root_cause"\s*:\s*"([^"]*)"', raw_backup)
+                root_cause = root_cause_match.group(1) if root_cause_match else "Response parsing error"
+                
+                # Try to extract debug checklist items
+                debug_items = _re.findall(r'"([^"]*check[^"]*)"', raw_backup, _re.IGNORECASE)
+                if not debug_items:
+                    debug_items = ["Check LLM service output is valid JSON", "Verify model prompt enforces JSON-only"]
+                
+                logger.info("Successfully extracted partial information using strategy 4")
+                return {
+                    "summary": summary,
+                    "root_cause": root_cause,
+                    "debug_checklist": debug_items,
+                    "fix_suggestions": [{"description": "LLM response was malformed or truncated"}],
+                    "corrected_function": {"description": "Unable to extract due to parsing error", "code": ""}
+                }
+                
+            except Exception:
+                pass
+                
+            # Strategy 5: Log raw response for debugging and return fallback
+            logger.error(f"Raw LLM response that failed to parse: {raw_backup[:1000]}...")
+            if len(raw_backup) > 1000:
+                logger.error(f"Response truncated at 1000 chars. Full length: {len(raw_backup)}")
             
             return {
                 "summary": "Failed to parse LLM response",
-                "root_cause": "Response parsing error",
+                "root_cause": "Response parsing error - LLM output was malformed or truncated",
                 "debug_checklist": [
                     "Check LLM service output is valid JSON",
                     "Verify model prompt enforces JSON-only",
                     "Inspect raw LLM response for syntax issues",
-                    "Check for markdown fences or extra text"
+                    "Check for markdown fences or extra text",
+                    "Consider if response was truncated due to length limits",
+                    "Review LLM service logs for errors"
                 ],
-                "fix_suggestions": [],
-                "corrected_function": {"description": "", "code": ""}
+                "fix_suggestions": [
+                    {"description": "LLM response parsing failed - check service configuration and output format"}
+                ],
+                "corrected_function": {"description": "Unable to generate due to LLM parsing error", "code": ""}
             }

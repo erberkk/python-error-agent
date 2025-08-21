@@ -18,8 +18,8 @@ app = FastAPI()
 # Initialize ErrorAgent
 error_agent = ErrorAgent(
     llm_url=os.getenv("LLM_URL", "http://localhost:11434"),
-    project_root=os.getcwd(),
-    model=os.getenv("LLM_MODEL", "mistral"),
+    project_root=os.getcwd(),  # Index THIS project (where fastapi_example.py is)
+    model=os.getenv("LLM_MODEL", "llama3:8b"),
     # Slack configuration (optional)
     slack_token=os.getenv("SLACK_TOKEN"),
     slack_channel=os.getenv("SLACK_CHANNEL"),
@@ -28,9 +28,9 @@ error_agent = ErrorAgent(
     app_name=os.getenv("APP_NAME", "Error Agent"),
     # Security and privacy
     require_local_llm=os.getenv("REQUIRE_LOCAL_LLM", "true").lower() == "true",
-    # Index configuration for large repos
-    index_include=[p.strip() for p in os.getenv("INDEX_INCLUDE", "**/*.py").split(",") if p.strip()],
-    index_exclude=[p.strip() for p in os.getenv("INDEX_EXCLUDE", "**/tests/**,**/venv/**,**/.venv/**,**/__pycache__/**,**/node_modules/**").split(",") if p.strip()],
+    # Index configuration - focus on user's project files
+    index_include=[p.strip() for p in os.getenv("INDEX_INCLUDE", "*.py,**/*.py").split(",") if p.strip()],
+    index_exclude=[p.strip() for p in os.getenv("INDEX_EXCLUDE", "**/error_agent/**,**/tests/**,**/venv/**,**/.venv/**,**/__pycache__/**,**/node_modules/**").split(",") if p.strip()],
     index_lazy=True,
     index_background=True,
 )
@@ -97,11 +97,9 @@ async def nested_error():
     def process_user_data(user_id: str, data: dict) -> dict:
         """Process user data and return formatted result."""
         try:
-            # This will raise KeyError if 'preferences' is missing
             preferences = data["preferences"]
             return format_user_preferences(user_id, preferences)
         except KeyError as e:
-            # Re-raise with more context
             raise ValueError(f"Invalid user data format: missing {str(e)}") from e
 
     def format_user_preferences(user_id: str, preferences: dict) -> dict:
@@ -119,20 +117,17 @@ async def nested_error():
             ValueError: If preferences format is invalid or theme is not a string
         """
         try:
-            # Validate input parameters
             if not isinstance(user_id, str):
                 raise ValueError("User ID must be a string")
             if not isinstance(preferences, dict):
                 raise ValueError("Preferences must be a dictionary")
                 
-            # Validate theme exists and is a string
             theme = preferences.get("theme")
             if theme is None:
                 raise ValueError("Theme is required in preferences")
             if not isinstance(theme, str):
                 raise ValueError(f"Theme must be a string, got {type(theme).__name__}")
                 
-            # Get user settings based on theme
             settings = get_user_settings(theme)
             
             return {
@@ -141,7 +136,6 @@ async def nested_error():
                 "settings": settings
             }
         except (KeyError, TypeError) as e:
-            # Re-raise with more context
             raise ValueError(f"Invalid preferences format: {str(e)}") from e
 
     def get_user_settings(theme: str) -> dict:
@@ -149,22 +143,19 @@ async def nested_error():
         if not isinstance(theme, str):
             raise ValueError("Theme must be a string")
             
-        # Available themes and their settings
         settings = {
             "light": {"background": "white", "text": "black"},
             "dark": {"background": "black", "text": "white"}
         }
         
-        # Validate theme exists in settings
         if theme not in settings:
             raise ValueError(f"Invalid theme: {theme}. Available themes: {list(settings.keys())}")
             
         return settings[theme]
 
-    # This will trigger the error chain
     user_data = {
         "preferences": {
-            "theme": 123  # This should be a string, will cause TypeError
+            "theme": 123
         }
     }
     
@@ -182,25 +173,21 @@ async def large_function_error():
         This simulates a real-world scenario with a large function where 
         an error occurs in a specific section.
         """
-        # Stage 1: Initial validation (lines 1-30)
         print("Starting data processing...")
         result = {"processed": True, "stages": []}
         
         if not isinstance(data_input, dict):
             raise TypeError("Input must be a dictionary")
         
-        # Initialize tracking variables
         processed_count = 0
         error_count = 0
         warning_count = 0
         
-        # Stage 1: User validation
         user_data = data_input.get("user", {})
         if not user_data:
             warning_count += 1
             result["stages"].append({"stage": "user_validation", "status": "warning", "message": "No user data"})
         else:
-            # Validate user ID
             user_id = user_data.get("id")
             if not user_id:
                 error_count += 1
@@ -209,7 +196,6 @@ async def large_function_error():
                 result["stages"].append({"stage": "user_validation", "status": "success"})
                 processed_count += 1
         
-        # Stage 2: Product data processing (lines 31-80)
         products = data_input.get("products", [])
         if not isinstance(products, list):
             error_count += 1
@@ -218,12 +204,10 @@ async def large_function_error():
             processed_products = []
             for idx, product in enumerate(products):
                 try:
-                    # Validate product structure
                     if not isinstance(product, dict):
                         error_count += 1
                         continue
                     
-                    # Check required fields
                     required_fields = ["id", "name", "price", "category"]
                     missing_fields = [field for field in required_fields if field not in product]
                     if missing_fields:
@@ -235,7 +219,6 @@ async def large_function_error():
                         })
                         continue
                     
-                    # Process price
                     price = product["price"]
                     if not isinstance(price, (int, float)):
                         try:
@@ -244,14 +227,12 @@ async def large_function_error():
                             error_count += 1
                             continue
                     
-                    # Category validation
                     valid_categories = ["electronics", "clothing", "books", "home", "sports"]
                     category = product["category"].lower()
                     if category not in valid_categories:
                         warning_count += 1
                         category = "other"
                     
-                    # Calculate discounted price
                     discount_rate = 0.1 if category == "electronics" else 0.05
                     discounted_price = price * (1 - discount_rate)
                     
@@ -277,24 +258,20 @@ async def large_function_error():
             result["processed_products"] = processed_products
             result["stages"].append({"stage": "product_processing", "status": "success", "count": len(processed_products)})
         
-        # Stage 3: Order processing (lines 81-150)
         orders = data_input.get("orders", [])
         if orders:
             processed_orders = []
             for order_idx, order in enumerate(orders):
                 try:
-                    # Validate order structure
                     if not isinstance(order, dict):
                         error_count += 1
                         continue
                     
-                    # Check order ID
                     order_id = order.get("order_id")
                     if not order_id:
                         error_count += 1
                         continue
                     
-                    # Process order items
                     items = order.get("items", [])
                     if not isinstance(items, list):
                         error_count += 1
@@ -308,7 +285,6 @@ async def large_function_error():
                             error_count += 1
                             continue
                         
-                        # Get item details
                         item_id = item.get("product_id")
                         quantity = item.get("quantity", 1)
                         
@@ -316,7 +292,6 @@ async def large_function_error():
                             error_count += 1
                             continue
                         
-                        # Find product in processed products
                         product_found = None
                         for product in processed_products:
                             if product["id"] == item_id:
@@ -332,7 +307,6 @@ async def large_function_error():
                             })
                             continue
                         
-                        # Calculate item total
                         item_price = product_found["discounted_price"]
                         item_total = item_price * quantity
                         total_amount += item_total
@@ -346,7 +320,6 @@ async def large_function_error():
                         }
                         processed_items.append(processed_item)
                     
-                    # Calculate taxes and fees
                     tax_rate = 0.08
                     tax_amount = total_amount * tax_rate
                     shipping_fee = 10.0 if total_amount < 50 else 0.0
@@ -374,20 +347,16 @@ async def large_function_error():
             result["processed_orders"] = processed_orders
             result["stages"].append({"stage": "order_processing", "status": "success", "count": len(processed_orders)})
         
-        # Stage 4: Analytics and reporting (lines 151-220)
         analytics = {}
         try:
-            # Calculate basic statistics
             total_products = len(processed_products) if 'processed_products' in result else 0
             total_orders = len(processed_orders) if 'processed_orders' in result else 0
             
-            # Revenue analytics
             total_revenue = 0
             if 'processed_orders' in result:
                 for order in result['processed_orders']:
                     total_revenue += order['total_amount']
             
-            # Category analytics
             category_stats = {}
             if 'processed_products' in result:
                 for product in result['processed_products']:
@@ -401,18 +370,15 @@ async def large_function_error():
                     category_stats[category]['count'] += 1
                     category_stats[category]['total_value'] += product['discounted_price']
                 
-                # Calculate averages
                 for category in category_stats:
                     count = category_stats[category]['count']
                     if count > 0:
                         category_stats[category]['avg_price'] = category_stats[category]['total_value'] / count
             
-            # Customer analytics
             customer_analytics = {}
             if 'processed_orders' in result:
                 customer_orders = {}
                 for order in result['processed_orders']:
-                    # For this example, we'll simulate customer IDs
                     customer_id = f"customer_{hash(order['order_id']) % 100}"
                     if customer_id not in customer_orders:
                         customer_orders[customer_id] = {
@@ -449,15 +415,12 @@ async def large_function_error():
                 "status": "error", 
                 "message": f"Analytics calculation failed: {str(e)}"
             })
-        
-        # Stage 5: Final validation and error simulation (lines 221-280)
-        # Validate final result structure
+
         required_result_fields = ["processed", "stages"]
         for field in required_result_fields:
             if field not in result:
                 raise ValueError(f"Missing required result field: {field}")
         
-        # Simulate data quality checks
         data_quality_score = 100
         if error_count > 0:
             data_quality_score -= (error_count * 10)
@@ -476,14 +439,12 @@ async def large_function_error():
         result["data_quality_score"] = data_quality_score
         result["final_status"] = "completed"
         
-        # Performance metrics
         result["performance_metrics"] = {
             "processed_items": processed_count,
             "error_rate": error_count / max(1, processed_count) * 100,
             "warning_rate": warning_count / max(1, processed_count) * 100
         }
         
-        # Final summary
         if error_count == 0:
             result["overall_status"] = "success"
         elif error_count < 5:
@@ -493,7 +454,6 @@ async def large_function_error():
         
         result["stages"].append({"stage": "final_validation", "status": "success"})
         
-        # Return processing results (lines 281-300)
         result["summary"] = {
             "total_stages": len(result["stages"]),
             "successful_stages": len([s for s in result["stages"] if s["status"] == "success"]),
@@ -502,12 +462,10 @@ async def large_function_error():
             "errors": error_count
         }
         
-        # Final cleanup and logging
         print(f"Data processing completed. Errors: {error_count}, Warnings: {warning_count}")
         
         return result
     
-    # Test data that will trigger the error
     test_data = {
         "user": {"id": "user123", "name": "Test User"},
         "products": [
@@ -523,10 +481,8 @@ async def large_function_error():
                 ]
             }
         ]
-        # Note: 'quality_config' is missing, which will cause the KeyError
     }
     
-    # This will trigger a KeyError in the large function
     result = massive_data_processor(test_data)
     return {"result": result}
 

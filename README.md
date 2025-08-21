@@ -6,7 +6,7 @@ An intelligent error handling and debugging agent for Python applications that u
 
 Error Agent automatically catches unhandled exceptions in your Python applications and:
 
-1. **Analyzes the error** using AI (Mistral-7B)
+1. **Analyzes the error** using LLM
 2. **Provides insights** about what went wrong
 3. **Suggests fixes** with corrected code
 4. **Sends notifications** to your team via Slack or Google Chat
@@ -24,8 +24,9 @@ Error Agent automatically catches unhandled exceptions in your Python applicatio
 
 ```bash
 git clone <repository-url>
-cd flask-ai-error-agent
+cd python-error-agent
 pip install -r requirements.txt
+pip install e .
 ```
 
 ## ⚙️ Setup
@@ -47,8 +48,8 @@ export LLM_URL="http://localhost:11434"
 ### 2. Start LLM Service
 
 ```bash
-# Install Ollama and start Mistral-7B
-ollama run mistral
+# Install Ollama and start your LLM model
+ollama run LLM model
 ```
 
 ## 💻 Usage
@@ -120,7 +121,7 @@ error_agent = ErrorAgent(
 ## Requirements
 
 - **Python**: 3.7+
-- **LLM Service**: Mistral-7B (via Ollama or compatible API)
+- **LLM Service**
 - **Messaging**: Slack workspace or Google Chat
 - **Dependencies**: See `requirements.txt`
 

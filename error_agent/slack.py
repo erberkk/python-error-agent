@@ -174,4 +174,16 @@ class SlackMessenger:
                     }
                 })
         
+        # Add GitHub PR link if available
+        auto_apply = insights.get('auto_apply', {})
+        github_pr = auto_apply.get('github_pr', {})
+        if github_pr.get('success') and github_pr.get('pr_url'):
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"🔗 *GitHub PR Created:* <{github_pr['pr_url']}|View Pull Request #{github_pr.get('pr_number', '')}>"
+                }
+            })
+        
         return blocks 

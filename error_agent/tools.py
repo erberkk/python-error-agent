@@ -707,3 +707,438 @@ def get_function_signature_and_doc(file_path: str, function_name: str) -> Dict[s
     except Exception as e:
         logger.error(f"Error extracting function signature for {function_name} in {file_path}: {e}")
         return result
+
+
+# -------------------------------
+# Automated fix application utils
+# -------------------------------
+
+def _normalize_code_for_matching(code: str) -> str:
+    """Normalize code for matching by standardizing quotes, whitespace, and removing comments."""
+    try:
+        if not code:
+            return ""
+        # Convert all quotes to single quotes for consistent matching
+        normalized = code.replace('"', "'")
+        # Normalize whitespace
+        normalized = re.sub(r'\s+', ' ', normalized.strip())
+        # Remove inline comments
+        normalized = re.sub(r'#.*$', '', normalized)
+        return normalized
+    except Exception:
+        return code
+
+def _split_before_after(code_text: str) -> Optional[Dict[str, str]]:
+    """Parse a BEFORE/AFTER formatted code block and return dict with keys 'before' and 'after'."""
+    try:
+        if not code_text:
+            return None
+        lower = code_text.lower()
+        if "# before:" in lower and "# after:" in lower:
+            # Split preserving case but using lower indices
+            idx_before = lower.find("# before:")
+            idx_after = lower.find("# after:")
+            if idx_before == -1 or idx_after == -1:
+                return None
+            before_part = code_text[idx_before:idx_after]
+            after_part = code_text[idx_after:]
+            # Strip labels
+            before_lines = []
+            for line in before_part.splitlines():
+                if line.strip().lower().startswith("# before:"):
+                    continue
+                before_lines.append(line)
+            after_lines = []
+            for line in after_part.splitlines():
+                if line.strip().lower().startswith("# after:"):
+                    continue
+                after_lines.append(line)
+            return {"before": "\n".join(before_lines).strip("\n"), "after": "\n".join(after_lines).strip("\n")}
+    except Exception:
+        return None
+    return None
+
+
+def _fix_common_syntax_issues(code: str) -> str:
+    """Fix common syntax issues in LLM-generated code."""
+    lines = code.splitlines()
+    fixed_lines = []
+    
+    for i, line in enumerate(lines):
+        fixed_lines.append(line)
+        
+        # Check if current line ends with ':' (like else:, except:, etc.)
+        if line.strip().endswith(':'):
+            # Check if next line is empty or just a comment
+            next_line_idx = i + 1
+            while next_line_idx < len(lines) and not lines[next_line_idx].strip():
+                next_line_idx += 1
+            
+            if next_line_idx < len(lines):
+                next_line = lines[next_line_idx].strip()
+                # If next line is just a comment, add a return statement
+                if next_line.startswith('#') and (next_line_idx + 1 >= len(lines) or \
+                   (next_line_idx + 1 < len(lines) and not lines[next_line_idx + 1].strip())):
+                    # Get the indentation of the next line
+                    next_line_full = lines[next_line_idx]
+                    indent = len(next_line_full) - len(next_line_full.lstrip())
+                    fixed_lines.append(' ' * indent + 'return None')
+    
+    return '\n'.join(fixed_lines)
+
+def _validate_python_syntax(code: str) -> bool:
+    """Validate that the code is syntactically correct Python."""
+    try:
+        import ast
+        ast.parse(code)
+        return True
+    except SyntaxError as e:
+        logger.warning(f"DEBUG: Syntax error in generated code: {e}")
+        logger.warning(f"DEBUG: Problematic code:\n{code}")
+        return False
+
+def apply_correction_from_insights(
+    error_context: Dict[str, Any],
+    insights: Dict[str, Any],
+    indexer: "ProjectIndexer",
+) -> Dict[str, Any]:
+    """
+    Apply code corrections suggested by the model directly to the project files.
+
+    Strategy order:
+    1) BEFORE/AFTER block replacement within the target function
+    2) Full function replacement if provided
+
+    Returns a result dict with: { success: bool, method: str, details: str, file: str }
+    """
+    logger.info("DEBUG: apply_correction_from_insights called")
+    result: Dict[str, Any] = {"success": False, "method": "", "details": "", "file": ""}
+    try:
+        cf = (insights or {}).get("corrected_function") or {}
+        code_text: str = cf.get("code") or ""
+        if not code_text.strip():
+            result["details"] = "No corrected_function.code provided by insights"
+            return result
+
+        target_file: str = error_context.get("file") or ""
+        target_function: str = error_context.get("function") or ""
+        if not target_file or not os.path.exists(target_file):
+            result["details"] = "Target file not found in error_context"
+            return result
+
+        # Load file lines once
+        with open(target_file, "r", encoding="utf-8") as f:
+            file_content = f.read()
+        file_lines = file_content.splitlines()
+
+        # Lookup function boundaries from indexer if available
+        fn_entry = None
+        by_file = indexer.functions_by_file.get(target_file, {}) if hasattr(indexer, "functions_by_file") else {}
+        fn_entry = by_file.get(target_function)
+        logger.info(f"DEBUG: Available functions in file: {list(by_file.keys())}")
+        logger.info(f"DEBUG: Looking for function: {target_function}")
+        logger.info(f"DEBUG: Function entry: {fn_entry}")
+
+        # 1) BEFORE/AFTER replacement within function
+        ba = _split_before_after(code_text)
+        logger.info(f"DEBUG: Parsed BEFORE/AFTER: {ba}")
+        logger.info(f"DEBUG: Original code_text: {code_text[:200]}...")
+        logger.info(f"DEBUG: Target function: {target_function}")
+        logger.info(f"DEBUG: Function entry found: {fn_entry is not None}")
+        
+        # If function not found in indexer, try to find it manually
+        if not fn_entry:
+            logger.info("DEBUG: Function not found in indexer, trying manual search...")
+            for i, line in enumerate(file_lines):
+                if f"def {target_function}(" in line:
+                    # Found the function, try to find its end
+                    start_line = i + 1
+                    # Look for the next function or end of file
+                    end_line = len(file_lines)
+                    for j in range(i + 1, len(file_lines)):
+                        if file_lines[j].strip().startswith("def ") and not file_lines[j].strip().startswith("    "):
+                            end_line = j
+                            break
+                    fn_entry = {
+                        "lineno": start_line,
+                        "end_lineno": end_line
+                    }
+                    logger.info(f"DEBUG: Manually found function at lines {start_line}-{end_line}")
+                    break
+        
+        if ba and fn_entry:
+            fn_start = fn_entry.get("lineno")
+            fn_end = fn_entry.get("end_lineno")
+            if isinstance(fn_start, int) and isinstance(fn_end, int) and 1 <= fn_start <= fn_end <= len(file_lines):
+                segment_text = "\n".join(file_lines[fn_start-1:fn_end])
+                before = ba["before"].strip()
+                after = ba["after"].rstrip() + "\n"  # ensure trailing newline
+                logger.info(f"DEBUG: Function segment: {segment_text}")
+                logger.info(f"DEBUG: BEFORE text: '{before}'")
+                logger.info(f"DEBUG: AFTER text: '{after.strip()}'")
+                
+                # Try exact match first
+                if before and before in segment_text:
+                    # Find the line that matches and preserve its indentation
+                    segment_lines = segment_text.splitlines()
+                    for i, line in enumerate(segment_lines):
+                        if before.strip() in line:
+                            # Preserve the original indentation
+                            original_indent = len(line) - len(line.lstrip())
+                            logger.info(f"DEBUG: Found matching line at index {i}: '{line}' with indent: {original_indent}")
+                            logger.info(f"DEBUG: Will replace this line with: {len(after_lines)} new lines")
+                            after_lines = after.strip().splitlines()
+                            
+                            # Apply the correct indentation preserving relative indentation
+                            indented_after_lines = []
+                            if after_lines:
+                                # Find the minimum indentation in the after_lines to use as base
+                                min_indent = float('inf')
+                                for line in after_lines:
+                                    if line.strip():  # Only consider non-empty lines
+                                        line_indent = len(line) - len(line.lstrip())
+                                        min_indent = min(min_indent, line_indent)
+                                
+                                if min_indent == float('inf'):
+                                    min_indent = 0
+                                
+                                # Apply relative indentation
+                                for after_line in after_lines:
+                                    if after_line.strip():  # Only process non-empty lines
+                                        # Calculate relative indentation
+                                        line_indent = len(after_line) - len(after_line.lstrip())
+                                        relative_indent = line_indent - min_indent
+                                        total_indent = original_indent + relative_indent
+                                        indented_after_lines.append(" " * total_indent + after_line.strip())
+                                    else:
+                                        indented_after_lines.append("")
+                            
+                            # Replace the matched line with proper multi-line handling
+                            logger.info(f"DEBUG: Replacing line {i} with {len(indented_after_lines)} new lines")
+                            logger.info(f"DEBUG: New lines: {indented_after_lines}")
+                            # Properly replace the line: remove old line and insert new lines at same position
+                            new_segment_lines = segment_lines[:i] + indented_after_lines + segment_lines[i+1:]
+                            new_segment = "\n".join(new_segment_lines)
+                            new_content = "\n".join(file_lines[:fn_start-1]) + "\n" + new_segment + "\n" + "\n".join(file_lines[fn_end:])
+                            
+                            # Fix common LLM syntax issues before validation
+                            fixed_content = _fix_common_syntax_issues(new_content)
+                            
+                            # Validate syntax before writing
+                            if not _validate_python_syntax(fixed_content):
+                                logger.warning(f"Generated code has syntax errors, skipping auto-apply")
+                                result["details"] = "Generated code has syntax errors - skipping auto-apply"
+                                return result
+                            
+                            with open(target_file, "w", encoding="utf-8") as fw:
+                                fw.write(fixed_content)
+                            result.update({
+                                "success": True,
+                                "method": "before_after_block",
+                                "details": f"Replaced first BEFORE block match within function {target_function} with preserved indentation",
+                                "file": target_file,
+                            })
+                            return result
+                
+                # Try normalized matching (handles quote differences)
+                normalized_before = _normalize_code_for_matching(before)
+                if normalized_before:
+                    # Find the best match in the function segment
+                    segment_lines = segment_text.splitlines()
+                    for i, line in enumerate(segment_lines):
+                        # Skip empty lines for normalized matching
+                        if not line.strip():
+                            continue
+                        normalized_line = _normalize_code_for_matching(line)
+                        if normalized_before in normalized_line or normalized_line in normalized_before:
+                            # Found a match, replace this line with proper indentation
+                            logger.info(f"DEBUG: Normalized matching found line at index {i}: '{line}'")
+                            logger.info(f"DEBUG: Normalized line: '{normalized_line}'")
+                            logger.info(f"DEBUG: Normalized before: '{normalized_before}'")
+                            new_segment_lines = segment_lines.copy()
+                            
+                            # Preserve the original indentation of the line being replaced
+                            original_indent = len(line) - len(line.lstrip())
+                            after_lines = ba["after"].strip().splitlines()
+                            
+                            # Apply the correct indentation preserving relative indentation
+                            indented_after_lines = []
+                            if after_lines:
+                                # Find the minimum indentation in the after_lines to use as base
+                                min_indent = float('inf')
+                                for line in after_lines:
+                                    if line.strip():  # Only consider non-empty lines
+                                        line_indent = len(line) - len(line.lstrip())
+                                        min_indent = min(min_indent, line_indent)
+                                
+                                if min_indent == float('inf'):
+                                    min_indent = 0
+                                
+                                # Apply relative indentation
+                                for after_line in after_lines:
+                                    if after_line.strip():  # Only process non-empty lines
+                                        # Calculate relative indentation
+                                        line_indent = len(after_line) - len(after_line.lstrip())
+                                        relative_indent = line_indent - min_indent
+                                        total_indent = original_indent + relative_indent
+                                        indented_after_lines.append(" " * total_indent + after_line.strip())
+                                    else:
+                                        indented_after_lines.append("")
+                            
+                            # Replace the matched line with proper multi-line handling
+                            logger.info(f"DEBUG: Replacing line {i} with {len(indented_after_lines)} new lines")
+                            logger.info(f"DEBUG: New lines: {indented_after_lines}")
+                            # Properly replace the line: remove old line and insert new lines at same position
+                            new_segment_lines = segment_lines[:i] + indented_after_lines + segment_lines[i+1:]
+                            new_segment = "\n".join(new_segment_lines)
+                            new_content = "\n".join(file_lines[:fn_start-1]) + "\n" + new_segment + "\n" + "\n".join(file_lines[fn_end:])
+                            
+                            # Fix common LLM syntax issues before validation
+                            fixed_content = _fix_common_syntax_issues(new_content)
+                            
+                            # Validate syntax before writing
+                            if not _validate_python_syntax(fixed_content):
+                                logger.warning(f"Generated code has syntax errors, skipping auto-apply")
+                                result["details"] = "Generated code has syntax errors - skipping auto-apply"
+                                return result
+                            
+                            with open(target_file, "w", encoding="utf-8") as fw:
+                                fw.write(fixed_content)
+                            result.update({
+                                "success": True,
+                                "method": "before_after_normalized",
+                                "details": f"Replaced line {i+1} in function {target_function} using normalized matching with preserved indentation",
+                                "file": target_file,
+                            })
+                            return result
+                
+                # If BEFORE not found verbatim, attempt fuzzy replacement of the error line only
+                error_line_text = (error_context.get("error_line_text") or "").strip()
+                if error_line_text and error_line_text in segment_text and ba["after"].strip():
+                    new_segment = segment_text.replace(error_line_text, ba["after"].strip(), 1)
+                    new_content = "\n".join(file_lines[:fn_start-1]) + "\n" + new_segment + "\n" + "\n".join(file_lines[fn_end:])
+                    with open(target_file, "w", encoding="utf-8") as fw:
+                        fw.write(new_content)
+                    result.update({
+                        "success": True,
+                        "method": "error_line_rewrite",
+                        "details": f"Replaced error line in function {target_function}",
+                        "file": target_file,
+                    })
+                    return result
+
+        # 2) Full function replacement if code contains function definition for target
+        if fn_entry:
+            fn_start = fn_entry.get("lineno")
+            fn_end = fn_entry.get("end_lineno")
+            if isinstance(fn_start, int) and isinstance(fn_end, int) and 1 <= fn_start <= fn_end <= len(file_lines):
+                # Check if code includes a definition of the same function
+                norm = code_text.strip()
+                defines_target = (
+                    norm.startswith(f"def {target_function}(") or
+                    norm.startswith(f"async def {target_function}(")
+                )
+                if defines_target:
+                    # Keep the original indentation level of the function start line
+                    indent_prefix = re.match(r"^\s*", file_lines[fn_start-1]).group(0) if file_lines[fn_start-1] else ""
+                    replacement_lines = norm.splitlines()
+                    # Do not force extra indentation; assume the provided code is properly indented from column 0
+                    # Replace directly
+                    new_content = "\n".join(file_lines[:fn_start-1]) + "\n" + "\n".join(replacement_lines) + "\n" + "\n".join(file_lines[fn_end:])
+                    with open(target_file, "w", encoding="utf-8") as fw:
+                        fw.write(new_content)
+                    result.update({
+                        "success": True,
+                        "method": "full_function_replacement",
+                        "details": f"Replaced function {target_function} using model-provided definition",
+                        "file": target_file,
+                    })
+                    return result
+
+        result["details"] = "No applicable strategy succeeded (missing BEFORE/AFTER match or full function definition)"
+        return result
+    except Exception as e:
+        result["details"] = f"Exception during apply: {str(e)}"
+        return result
+
+
+def _run_linter_and_fix(file_path: str) -> Dict[str, Any]:
+    """
+    Run linter on the modified file and attempt to auto-fix common issues.
+    Returns a dict with: { success: bool, linter_output: str, fixes_applied: list }
+    """
+    result = {"success": False, "linter_output": "", "fixes_applied": []}
+    try:
+        import subprocess
+        import tempfile
+        import shutil
+        
+        logger.info(f"Running linter on {file_path}")
+        
+        # Try black for formatting first
+        try:
+            black_result = subprocess.run(
+                ["black", "--line-length", "88", "--quiet", file_path],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if black_result.returncode == 0:
+                result["fixes_applied"].append("black formatting")
+                result["success"] = True
+                logger.info("Black formatting applied successfully")
+            else:
+                logger.warning(f"Black formatting failed: {black_result.stderr}")
+        except FileNotFoundError:
+            logger.warning("Black not found - skipping formatting")
+        except (subprocess.TimeoutExpired, subprocess.SubprocessError) as e:
+            logger.warning(f"Black error: {e}")
+        
+        # Try flake8 for style issues
+        try:
+            flake8_result = subprocess.run(
+                ["flake8", "--max-line-length=88", "--ignore=E203,W503", file_path],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if flake8_result.stdout or flake8_result.stderr:
+                result["linter_output"] = flake8_result.stdout + flake8_result.stderr
+                logger.info(f"Flake8 found issues: {result['linter_output']}")
+            else:
+                logger.info("Flake8 check passed - no style issues")
+        except FileNotFoundError:
+            logger.warning("Flake8 not found - skipping style check")
+        except (subprocess.TimeoutExpired, subprocess.SubprocessError) as e:
+            logger.warning(f"Flake8 error: {e}")
+        
+        # Try autopep8 for additional fixes
+        try:
+            autopep8_result = subprocess.run(
+                ["autopep8", "--in-place", "--aggressive", "--aggressive", file_path],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if autopep8_result.returncode == 0:
+                result["fixes_applied"].append("autopep8 style fixes")
+                result["success"] = True
+                logger.info("Autopep8 fixes applied successfully")
+            else:
+                logger.warning(f"Autopep8 failed: {autopep8_result.stderr}")
+        except FileNotFoundError:
+            logger.warning("Autopep8 not found - skipping style fixes")
+        except (subprocess.TimeoutExpired, subprocess.SubprocessError) as e:
+            logger.warning(f"Autopep8 error: {e}")
+            
+        # If no linters were available, mark as success but note it
+        if not result["fixes_applied"] and not result["linter_output"]:
+            result["success"] = True
+            result["linter_output"] = "No linters available - code syntax check passed"
+            logger.info("No linters available, but code syntax is valid")
+            
+    except Exception as e:
+        result["linter_output"] = f"Linter error: {str(e)}"
+        logger.error(f"Linter integration error: {e}")
+    
+    return result

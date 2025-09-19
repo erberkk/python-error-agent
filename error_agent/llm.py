@@ -150,9 +150,14 @@ CRITICAL FORMATTING:
 - Write a concise but accurate summary identifying the exact failing line
 - Root cause should be brief but connect error to actual data that triggered it  
 - Debug checklist: max 4 specific items about variables and logic in this function
-- Fix suggestions: max 2 items targeting the EXACT failing line
+- Fix suggestions: max 2 conceptual approaches (NO CODE, only strategy descriptions)
 - Use meaningful defaults (thresholds: 50-100; configs: realistic structures)
 - In corrected_function code: maintain proper Python indentation and formatting
+- ALWAYS use multi-line Python code with proper indentation (NO semicolons or single-line statements)
+- Use BEFORE/AFTER format with clear line breaks and proper Python syntax
+- ENSURE all else clauses contain executable code (not just comments)
+- ALWAYS include return statements or raise statements in else blocks
+- For KeyError fixes, check ALL required keys before accessing nested structures
 
 Return ONLY valid JSON with these exact keys: summary, root_cause, debug_checklist, fix_suggestions, corrected_function
 

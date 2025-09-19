@@ -11,7 +11,7 @@ from threading import Thread
 from .llm import LLMHandler
 from .slack import SlackMessenger
 from .google_chat import GoogleChatMessenger
-from .tools import ProjectAnalyzer, analyze_error_context, ProjectIndexer, get_function_signature_and_doc
+from .tools import ProjectAnalyzer, analyze_error_context, ProjectIndexer, get_function_signature_and_doc, apply_correction_from_insights, _run_linter_and_fix
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -32,6 +32,8 @@ class ErrorAgent:
         index_exclude: Optional[list] = None,
         index_lazy: bool = True,
         index_background: bool = True,
+        auto_apply_fixes: bool = False,
+        auto_lint_after_apply: bool = False,
     ):
         """
         Initialize the error agent.
@@ -48,6 +50,8 @@ class ErrorAgent:
         logger.info("Initializing Error Agent")
         self.llm = LLMHandler(llm_url, model, require_local_llm=require_local_llm)
         self.project_root = project_root
+        self.auto_apply_fixes = auto_apply_fixes
+        self.auto_lint_after_apply = auto_lint_after_apply
         
         # Initialize messengers based on provided credentials
         self.messengers = []
@@ -248,6 +252,38 @@ class ErrorAgent:
             pass
         insights = self.llm.get_error_insights(error_context, error_context.get('source_context', ''))
         logger.info("LLM analysis received")
+
+        # Optionally auto-apply fixes suggested by the model
+        logger.info(f"DEBUG: auto_apply_fixes={self.auto_apply_fixes}")
+        if self.auto_apply_fixes:
+            logger.info("DEBUG: Entering auto-apply section")
+            try:
+                apply_result = apply_correction_from_insights(error_context, insights, self.indexer)
+                if apply_result.get("success"):
+                    logger.info(f"Auto-applied fix via {apply_result.get('method')}: {apply_result.get('details')}")
+                    
+                    # Optionally run linter after successful apply
+                    if self.auto_lint_after_apply:
+                        try:
+                            linter_result = _run_linter_and_fix(apply_result.get("file", ""))
+                            if linter_result.get("success"):
+                                fixes = linter_result.get("fixes_applied", [])
+                                if fixes:
+                                    logger.info(f"Linter applied fixes: {', '.join(fixes)}")
+                                else:
+                                    logger.info("Linter check passed - no fixes needed")
+                            else:
+                                logger.warning(f"Linter check failed: {linter_result.get('linter_output', 'Unknown error')}")
+                            apply_result["linter"] = linter_result
+                        except Exception as lint_e:
+                            logger.error(f"Linter encountered an error: {lint_e}")
+                            apply_result["linter"] = {"success": False, "error": str(lint_e)}
+                else:
+                    logger.warning(f"Auto-apply failed: {apply_result.get('details')}")
+                # Attach apply_result to insights for messenger visibility if needed
+                insights["auto_apply"] = apply_result
+            except Exception as e:
+                logger.error(f"Auto-apply encountered an error: {e}")
 
         # Send to all configured messengers
         for messenger in self.messengers:

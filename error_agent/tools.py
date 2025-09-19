@@ -811,7 +811,6 @@ def apply_correction_from_insights(
 
     Returns a result dict with: { success: bool, method: str, details: str, file: str }
     """
-    logger.info("DEBUG: apply_correction_from_insights called")
     result: Dict[str, Any] = {"success": False, "method": "", "details": "", "file": ""}
     try:
         cf = (insights or {}).get("corrected_function") or {}
@@ -835,20 +834,11 @@ def apply_correction_from_insights(
         fn_entry = None
         by_file = indexer.functions_by_file.get(target_file, {}) if hasattr(indexer, "functions_by_file") else {}
         fn_entry = by_file.get(target_function)
-        logger.info(f"DEBUG: Available functions in file: {list(by_file.keys())}")
-        logger.info(f"DEBUG: Looking for function: {target_function}")
-        logger.info(f"DEBUG: Function entry: {fn_entry}")
-
         # 1) BEFORE/AFTER replacement within function
         ba = _split_before_after(code_text)
-        logger.info(f"DEBUG: Parsed BEFORE/AFTER: {ba}")
-        logger.info(f"DEBUG: Original code_text: {code_text[:200]}...")
-        logger.info(f"DEBUG: Target function: {target_function}")
-        logger.info(f"DEBUG: Function entry found: {fn_entry is not None}")
         
         # If function not found in indexer, try to find it manually
         if not fn_entry:
-            logger.info("DEBUG: Function not found in indexer, trying manual search...")
             for i, line in enumerate(file_lines):
                 if f"def {target_function}(" in line:
                     # Found the function, try to find its end
@@ -863,7 +853,6 @@ def apply_correction_from_insights(
                         "lineno": start_line,
                         "end_lineno": end_line
                     }
-                    logger.info(f"DEBUG: Manually found function at lines {start_line}-{end_line}")
                     break
         
         if ba and fn_entry:
@@ -873,9 +862,6 @@ def apply_correction_from_insights(
                 segment_text = "\n".join(file_lines[fn_start-1:fn_end])
                 before = ba["before"].strip()
                 after = ba["after"].rstrip() + "\n"  # ensure trailing newline
-                logger.info(f"DEBUG: Function segment: {segment_text}")
-                logger.info(f"DEBUG: BEFORE text: '{before}'")
-                logger.info(f"DEBUG: AFTER text: '{after.strip()}'")
                 
                 # Try exact match first
                 if before and before in segment_text:
@@ -885,8 +871,6 @@ def apply_correction_from_insights(
                         if before.strip() in line:
                             # Preserve the original indentation
                             original_indent = len(line) - len(line.lstrip())
-                            logger.info(f"DEBUG: Found matching line at index {i}: '{line}' with indent: {original_indent}")
-                            logger.info(f"DEBUG: Will replace this line with: {len(after_lines)} new lines")
                             after_lines = after.strip().splitlines()
                             
                             # Apply the correct indentation preserving relative indentation
@@ -914,8 +898,6 @@ def apply_correction_from_insights(
                                         indented_after_lines.append("")
                             
                             # Replace the matched line with proper multi-line handling
-                            logger.info(f"DEBUG: Replacing line {i} with {len(indented_after_lines)} new lines")
-                            logger.info(f"DEBUG: New lines: {indented_after_lines}")
                             # Properly replace the line: remove old line and insert new lines at same position
                             new_segment_lines = segment_lines[:i] + indented_after_lines + segment_lines[i+1:]
                             new_segment = "\n".join(new_segment_lines)
@@ -952,9 +934,6 @@ def apply_correction_from_insights(
                         normalized_line = _normalize_code_for_matching(line)
                         if normalized_before in normalized_line or normalized_line in normalized_before:
                             # Found a match, replace this line with proper indentation
-                            logger.info(f"DEBUG: Normalized matching found line at index {i}: '{line}'")
-                            logger.info(f"DEBUG: Normalized line: '{normalized_line}'")
-                            logger.info(f"DEBUG: Normalized before: '{normalized_before}'")
                             new_segment_lines = segment_lines.copy()
                             
                             # Preserve the original indentation of the line being replaced
@@ -986,8 +965,6 @@ def apply_correction_from_insights(
                                         indented_after_lines.append("")
                             
                             # Replace the matched line with proper multi-line handling
-                            logger.info(f"DEBUG: Replacing line {i} with {len(indented_after_lines)} new lines")
-                            logger.info(f"DEBUG: New lines: {indented_after_lines}")
                             # Properly replace the line: remove old line and insert new lines at same position
                             new_segment_lines = segment_lines[:i] + indented_after_lines + segment_lines[i+1:]
                             new_segment = "\n".join(new_segment_lines)

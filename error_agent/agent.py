@@ -34,6 +34,9 @@ class ErrorAgent:
         index_background: bool = True,
         auto_apply_fixes: bool = False,
         auto_lint_after_apply: bool = False,
+        auto_open_github_pr: bool = False,
+        github_token: Optional[str] = None,
+        branch_name_for_auto_github_pr: Optional[str] = None,
     ):
         """
         Initialize the error agent.
@@ -52,6 +55,20 @@ class ErrorAgent:
         self.project_root = project_root
         self.auto_apply_fixes = auto_apply_fixes
         self.auto_lint_after_apply = auto_lint_after_apply
+        self.auto_open_github_pr = auto_open_github_pr
+        self.github_token = github_token
+        self.branch_name_for_auto_github_pr = branch_name_for_auto_github_pr
+        
+        # Initialize GitHub PR Manager if enabled
+        self.github_pr_manager = None
+        if self.auto_open_github_pr and self.github_token:
+            try:
+                from .github_integration import GitHubPRManager
+                self.github_pr_manager = GitHubPRManager(self.github_token, self.project_root)
+                logger.info("GitHub PR Manager initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize GitHub PR Manager: {e}")
+                self.auto_open_github_pr = False
         
         # Initialize messengers based on provided credentials
         self.messengers = []
@@ -263,6 +280,7 @@ class ErrorAgent:
                     logger.info(f"Auto-applied fix via {apply_result.get('method')}: {apply_result.get('details')}")
                     
                     # Optionally run linter after successful apply
+                    linter_result = {"success": True}  # Default to success if linter not run
                     if self.auto_lint_after_apply:
                         try:
                             linter_result = _run_linter_and_fix(apply_result.get("file", ""))
@@ -278,6 +296,25 @@ class ErrorAgent:
                         except Exception as lint_e:
                             logger.error(f"Linter encountered an error: {lint_e}")
                             apply_result["linter"] = {"success": False, "error": str(lint_e)}
+                    
+                    # Optionally create GitHub PR after successful apply and lint
+                    if self.auto_open_github_pr and self.github_pr_manager and linter_result.get("success"):
+                        try:
+                            github_result = self.github_pr_manager.create_auto_fix_pr(
+                                error_context=error_context,
+                                apply_result=apply_result,
+                                insights=insights,
+                                custom_branch_name=self.branch_name_for_auto_github_pr
+                            )
+                            if github_result.get("success"):
+                                logger.info(f"GitHub PR created: {github_result.get('pr_url')}")
+                                apply_result["github_pr"] = github_result
+                            else:
+                                logger.warning(f"GitHub PR creation failed: {github_result.get('error')}")
+                                apply_result["github_pr"] = github_result
+                        except Exception as github_e:
+                            logger.error(f"GitHub PR creation encountered an error: {github_e}")
+                            apply_result["github_pr"] = {"success": False, "error": str(github_e)}
                 else:
                     logger.warning(f"Auto-apply failed: {apply_result.get('details')}")
                 # Attach apply_result to insights for messenger visibility if needed

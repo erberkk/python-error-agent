@@ -21,10 +21,8 @@ error_agent = ErrorAgent(
     project_root=os.getcwd(),  # Index THIS project (where fastapi_example.py is)
     model=os.getenv("LLM_MODEL", "llama3:8b"),
     # Slack configuration (optional)
-    slack_token=os.getenv(
-        "SLACK_TOKEN", ""
-    ),
-    slack_channel=os.getenv("SLACK_CHANNEL", ""),
+    slack_token=os.getenv("SLACK_TOKEN"),
+    slack_channel=os.getenv("SLACK_CHANNEL"),
     # Google Chat configuration (optional)
     google_chat_webhook=os.getenv("GOOGLE_CHAT_WEBHOOK"),
     app_name=os.getenv("APP_NAME", "Error Agent"),
@@ -48,6 +46,9 @@ error_agent = ErrorAgent(
     index_background=True,
     auto_apply_fixes=os.getenv("AUTO_APPLY_FIXES", "true").lower() == "true",
     auto_lint_after_apply=os.getenv("AUTO_LINT_AFTER_APPLY", "true").lower() == "true",
+    auto_open_github_pr=os.getenv("AUTO_OPEN_GITHUB_PR", "true").lower() == "true",
+    github_token=os.getenv("GITHUB_TOKEN"),
+    branch_name_for_auto_github_pr=os.getenv("BRANCH_NAME_FOR_AUTO_GITHUB_PR"),
 )
 
 # Install error handler

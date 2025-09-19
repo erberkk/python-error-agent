@@ -93,9 +93,11 @@ async def trigger_error():
 @app.get("/simple-error-test")
 async def simple_error_test():
     data = {"existing_key": "value"}
-    
-    missing_value = data["missing_key"]
-    
+
+    missing_value = (
+        "default_value" if "missing_key" not in data else data["missing_key"]
+    )
+
     return {"result": missing_value}
 
 

@@ -323,9 +323,9 @@ class GitHubPRManager:
             # Commit changes
             file_path = apply_result.get('file', error_context.get('file_path', ''))
             error_type = error_context.get('error_type', 'Unknown')
-            function_name = error_context.get('function_name', 'unknown')
+            function_name = error_context.get('function_name') or error_context.get('function', 'unknown_function')
             
-            commit_message = f"🤖 Auto-fix {error_type} in {function_name}\n\nAutomatically applied fix for {error_type} error in function {function_name}"
+            commit_message = f"Fix {error_type} in {function_name}\n\nAutomatically applied fix for {error_type} error in function {function_name}"
             
             if not self._commit_changes(file_path, commit_message):
                 return {'success': False, 'error': 'No changes to commit or commit failed'}
@@ -335,7 +335,7 @@ class GitHubPRManager:
                 return {'success': False, 'error': 'Failed to push branch to remote'}
             
             # Create PR
-            pr_title = f"Auto-fix: {error_type} in {function_name}"
+            pr_title = f"Fix {error_type} in {function_name}"
             pr_body = self._create_pr_body(error_context, apply_result, insights)
             
             pr_result = self._create_github_pr(branch_name, pr_title, pr_body)

@@ -163,11 +163,6 @@ class GitHubPRManager:
     
     def _create_pr_body(self, error_context: Dict[str, Any], apply_result: Dict[str, Any], insights: Dict[str, Any]) -> str:
         """Generate PR body content."""
-        # Debug log all available data
-        logger.info(f"DEBUG PR Body - error_context keys: {list(error_context.keys())}")
-        logger.info(f"DEBUG PR Body - apply_result keys: {list(apply_result.keys())}")
-        logger.info(f"DEBUG PR Body - insights keys: {list(insights.keys())}")
-        
         # Extract error information with better field mapping
         error_type = error_context.get('error_type') or error_context.get('exception_type', 'Unknown')
         file_path = apply_result.get('file') or error_context.get('file_path') or error_context.get('file', 'Unknown')
@@ -183,15 +178,10 @@ class GitHubPRManager:
         # Handle both dict and string formats for corrected_function
         if isinstance(corrected_function, dict):
             corrected_function_code = corrected_function.get('code', '')
-            corrected_function_preview = str(corrected_function)[:200] if corrected_function else "None"
         elif isinstance(corrected_function, str):
             corrected_function_code = corrected_function
-            corrected_function_preview = corrected_function[:200] if corrected_function else "None"
         else:
             corrected_function_code = str(corrected_function) if corrected_function else ''
-            corrected_function_preview = str(corrected_function)[:200] if corrected_function else "None"
-            
-        logger.info(f"DEBUG PR Body - corrected_function: {corrected_function_preview}...")
         
         if corrected_function_code:
             # Handle both "# BEFORE:" and "BEFORE:" formats
@@ -206,7 +196,6 @@ class GitHubPRManager:
                             # Clean up any extra content after the code
                             if '```' in after_code:
                                 after_code = after_code.split('```')[0].strip()
-                            logger.info(f"DEBUG: Successfully parsed BEFORE: '{before_code[:50]}...' AFTER: '{after_code[:50]}...'")
                 except Exception as e:
                     logger.warning(f"Failed to parse BEFORE/AFTER: {e}")
         

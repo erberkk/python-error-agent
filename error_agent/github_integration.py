@@ -64,6 +64,9 @@ class GitHubPRManager:
                 raise ValueError(f"Could not parse repository from URL: {remote_url}")
                 
             owner, repo = match.groups()
+            # Remove .git suffix if present
+            if repo.endswith('.git'):
+                repo = repo[:-4]
             logger.info(f"Detected repository: {owner}/{repo}")
             return owner, repo
             
@@ -92,7 +95,7 @@ class GitHubPRManager:
         """Generate a unique branch name for the auto-fix."""
         error_type = error_context.get('error_type', 'unknown').lower()
         timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-        function_name = error_context.get('function_name', 'unknown')
+        function_name = error_context.get('function_name') or error_context.get('function', 'unknown')
         
         # Clean up function name for branch name
         clean_function = re.sub(r'[^a-zA-Z0-9_]', '', function_name)

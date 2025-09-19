@@ -94,9 +94,10 @@ async def trigger_error():
 async def simple_error_test():
     data = {"existing_key": "value"}
 
-    missing_value = (
-        "default_value" if "missing_key" not in data else data["missing_key"]
-    )
+    if "missing_key" in data:
+        missing_value = data["missing_key"]
+    else:
+        missing_value = default_value
 
     return {"result": missing_value}
 

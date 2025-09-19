@@ -180,14 +180,24 @@ class GitHubPRManager:
         before_code = 'Not available'
         after_code = 'Not available'
         
-        corrected_function_preview = str(corrected_function)[:200] if corrected_function else "None"
+        # Handle both dict and string formats for corrected_function
+        if isinstance(corrected_function, dict):
+            corrected_function_code = corrected_function.get('code', '')
+            corrected_function_preview = str(corrected_function)[:200] if corrected_function else "None"
+        elif isinstance(corrected_function, str):
+            corrected_function_code = corrected_function
+            corrected_function_preview = corrected_function[:200] if corrected_function else "None"
+        else:
+            corrected_function_code = str(corrected_function) if corrected_function else ''
+            corrected_function_preview = str(corrected_function)[:200] if corrected_function else "None"
+            
         logger.info(f"DEBUG PR Body - corrected_function: {corrected_function_preview}...")
         
-        if corrected_function:
+        if corrected_function_code:
             # Handle both "# BEFORE:" and "BEFORE:" formats
-            if '# BEFORE:' in corrected_function and '# AFTER:' in corrected_function:
+            if '# BEFORE:' in corrected_function_code and '# AFTER:' in corrected_function_code:
                 try:
-                    parts = corrected_function.split('# BEFORE:')
+                    parts = corrected_function_code.split('# BEFORE:')
                     if len(parts) > 1:
                         before_after = parts[1].split('# AFTER:')
                         if len(before_after) > 1:
@@ -196,6 +206,7 @@ class GitHubPRManager:
                             # Clean up any extra content after the code
                             if '```' in after_code:
                                 after_code = after_code.split('```')[0].strip()
+                            logger.info(f"DEBUG: Successfully parsed BEFORE: '{before_code[:50]}...' AFTER: '{after_code[:50]}...'")
                 except Exception as e:
                     logger.warning(f"Failed to parse BEFORE/AFTER: {e}")
         

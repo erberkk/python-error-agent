@@ -90,6 +90,22 @@ async def trigger_error():
     return {"result": result}
 
 
+@app.get("/complex-error")
+async def complex_error():
+    def process_data(data):
+        if "nested" in data and "value" in data["nested"]:
+            return data["nested"]["value"]
+        else:
+            raise ValueError("Invalid input: missing key")
+
+    def validate_input(data):
+        return process_data(data)
+
+    data = {"some": "data"}
+    result = validate_input(data)
+    return {"result": result}
+
+
 @app.get("/simple-error-test")
 async def simple_error_test():
     data = {"existing_key": "value"}

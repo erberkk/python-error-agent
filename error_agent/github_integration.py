@@ -161,40 +161,74 @@ class GitHubPRManager:
             logger.error(f"Failed to push branch {branch_name}: {e}")
             return False
     
-    def _create_pr_body(self, error_context: Dict[str, Any], insights: Dict[str, Any]) -> str:
+    def _create_pr_body(self, error_context: Dict[str, Any], apply_result: Dict[str, Any], insights: Dict[str, Any]) -> str:
         """Generate PR body content."""
-        error_type = error_context.get('error_type', 'Unknown')
-        file_path = error_context.get('file_path', 'Unknown')
-        function_name = error_context.get('function_name', 'Unknown')
-        line_number = error_context.get('line_number', 'Unknown')
-        error_message = error_context.get('error_message', 'Unknown')
+        # Debug log all available data
+        logger.info(f"DEBUG PR Body - error_context keys: {list(error_context.keys())}")
+        logger.info(f"DEBUG PR Body - apply_result keys: {list(apply_result.keys())}")
+        logger.info(f"DEBUG PR Body - insights keys: {list(insights.keys())}")
         
-        # Extract before/after code from insights
+        # Extract error information with better field mapping
+        error_type = error_context.get('error_type') or error_context.get('exception_type', 'Unknown')
+        file_path = apply_result.get('file') or error_context.get('file_path') or error_context.get('file', 'Unknown')
+        function_name = error_context.get('function_name') or error_context.get('function', 'Unknown')
+        line_number = error_context.get('line_number') or error_context.get('line', 'Unknown')
+        error_message = error_context.get('error_message') or error_context.get('message', 'Unknown')
+        
+        # Extract before/after code from insights with improved parsing
         corrected_function = insights.get('corrected_function', '')
-        before_code = ''
-        after_code = ''
+        before_code = 'Not available'
+        after_code = 'Not available'
         
-        if 'BEFORE:' in corrected_function and 'AFTER:' in corrected_function:
-            parts = corrected_function.split('BEFORE:')
-            if len(parts) > 1:
-                before_after = parts[1].split('AFTER:')
-                if len(before_after) > 1:
-                    before_code = before_after[0].strip()
-                    after_code = before_after[1].strip()
+        # Handle both dict and string formats for corrected_function
+        if isinstance(corrected_function, dict):
+            corrected_function_code = corrected_function.get('code', '')
+            corrected_function_preview = str(corrected_function)[:200] if corrected_function else "None"
+        elif isinstance(corrected_function, str):
+            corrected_function_code = corrected_function
+            corrected_function_preview = corrected_function[:200] if corrected_function else "None"
+        else:
+            corrected_function_code = str(corrected_function) if corrected_function else ''
+            corrected_function_preview = str(corrected_function)[:200] if corrected_function else "None"
+            
+        logger.info(f"DEBUG PR Body - corrected_function: {corrected_function_preview}...")
         
-        return f"""## 🤖 Auto-Fix Applied
+        if corrected_function_code:
+            # Handle both "# BEFORE:" and "BEFORE:" formats
+            if '# BEFORE:' in corrected_function_code and '# AFTER:' in corrected_function_code:
+                try:
+                    parts = corrected_function_code.split('# BEFORE:')
+                    if len(parts) > 1:
+                        before_after = parts[1].split('# AFTER:')
+                        if len(before_after) > 1:
+                            before_code = before_after[0].strip()
+                            after_code = before_after[1].strip()
+                            # Clean up any extra content after the code
+                            if '```' in after_code:
+                                after_code = after_code.split('```')[0].strip()
+                            logger.info(f"DEBUG: Successfully parsed BEFORE: '{before_code[:50]}...' AFTER: '{after_code[:50]}...'")
+                except Exception as e:
+                    logger.warning(f"Failed to parse BEFORE/AFTER: {e}")
+        
+        # Clean up file path for display
+        if file_path != 'Unknown':
+            display_file = file_path.replace('\\', '/').split('/')[-1] if '/' in file_path or '\\' in file_path else file_path
+        else:
+            display_file = file_path
+            
+        return f"""## Auto-Fix Applied
 
-**Error Type:** {error_type}
-**File:** {file_path}
-**Function:** {function_name}
+**Error Type:** {error_type}  
+**File:** `{display_file}`  
+**Function:** `{function_name}`  
 **Line:** {line_number}
 
-### Original Error:
+### Original Error
 ```
 {error_message}
 ```
 
-### Applied Fix:
+### Applied Changes
 ```python
 # BEFORE:
 {before_code}
@@ -203,13 +237,13 @@ class GitHubPRManager:
 {after_code}
 ```
 
-### Validation:
+### Validation Results
 - ✅ Syntax validation passed
-- ✅ Linter checks passed
+- ✅ Linter checks passed  
 - ✅ Auto-apply successful
 
-*This PR was automatically created by Error Agent*
-"""
+---
+*This PR was automatically created by Error Agent*"""
     
     def _create_github_pr(self, branch_name: str, title: str, body: str) -> Dict[str, Any]:
         """Create a GitHub Pull Request."""
@@ -289,9 +323,9 @@ class GitHubPRManager:
             # Commit changes
             file_path = apply_result.get('file', error_context.get('file_path', ''))
             error_type = error_context.get('error_type', 'Unknown')
-            function_name = error_context.get('function_name', 'unknown')
+            function_name = error_context.get('function_name') or error_context.get('function', 'unknown_function')
             
-            commit_message = f"🤖 Auto-fix {error_type} in {function_name}\n\nAutomatically applied fix for {error_type} error in function {function_name}"
+            commit_message = f"Fix {error_type} in {function_name}\n\nAutomatically applied fix for {error_type} error in function {function_name}"
             
             if not self._commit_changes(file_path, commit_message):
                 return {'success': False, 'error': 'No changes to commit or commit failed'}
@@ -301,8 +335,8 @@ class GitHubPRManager:
                 return {'success': False, 'error': 'Failed to push branch to remote'}
             
             # Create PR
-            pr_title = f"🤖 Auto-fix: {error_type} in {function_name}"
-            pr_body = self._create_pr_body(error_context, insights)
+            pr_title = f"Fix {error_type} in {function_name}"
+            pr_body = self._create_pr_body(error_context, apply_result, insights)
             
             pr_result = self._create_github_pr(branch_name, pr_title, pr_body)
             
